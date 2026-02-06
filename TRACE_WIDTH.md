@@ -1,7 +1,6 @@
 # Trace Width Rule
 
 **Last Updated:** February 6, 2026  
-**Author:** Rockwell Automation  
 **Status:** 🚧 Future Implementation (Configuration Ready)
 
 ## Purpose

@@ -35,6 +35,7 @@ The EMC Auditor plugin includes both **implemented** and **planned** rules. Each
 |------|--------|---------------|-------------|
 | **Via Stitching** | ✅ Active | [VIA_STITCHING.md](VIA_STITCHING.md) | Ensures critical signal vias have nearby GND return vias within configurable distance (default 2mm). Prevents EMI radiation and maintains signal integrity. |
 | **Decoupling Capacitors** | ✅ Active | [DECOUPLING.md](DECOUPLING.md) | Verifies IC power pins have decoupling capacitors within configurable distance (default 3mm). Uses **smart net matching** - only checks capacitors on the same power rail. Includes visual arrows to nearest cap. |
+| **Ground Plane Continuity** | ✅ Active | [GROUND_PLANE.md](GROUND_PLANE.md) | Verifies continuous ground plane underneath and around high-speed traces. Checks for gaps under trace (default 0.5mm sampling) and clearance zone around trace (default 1mm). Critical for EMC radiated emission reduction and signal return path. |
 
 ### 🚧 Planned Rules (Configuration Ready)
 
@@ -42,7 +43,6 @@ The EMC Auditor plugin includes both **implemented** and **planned** rules. Each
 |------|--------|---------------|-------------|
 | **Clearance & Creepage** | 🚧 Config Ready | [CLEARANCE_CREEPAGE_GUIDE.md](CLEARANCE_CREEPAGE_GUIDE.md)<br>[CLEARANCE_QUICK_REF.md](CLEARANCE_QUICK_REF.md)<br>[CLEARANCE_VS_CREEPAGE_VISUAL.md](CLEARANCE_VS_CREEPAGE_VISUAL.md) | IEC60664-1 and IPC2221 electrical safety compliance. Verifies clearance (air gap) and creepage (surface path) between voltage domains. Supports reinforced insulation, overvoltage categories I-IV, pollution degrees 1-4. **Implementation pending**. |
 | **Trace Width** | 🚧 Config Ready | [TRACE_WIDTH.md](TRACE_WIDTH.md) | Verifies power traces meet minimum width requirements based on current capacity. Includes IPC-2221 formulas for temperature rise and voltage drop calculations. **Implementation pending**. |
-| **Ground Plane** | 🚧 Config Ready | [GROUND_PLANE.md](GROUND_PLANE.md) | Checks ground plane coverage percentage and detects gaps exceeding threshold. Ensures low-impedance return path and EMI shielding. **Implementation pending**. |
 
 ### 📋 Additional Rule Templates
 
@@ -64,6 +64,173 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
 
 **Extend Plugin**: See "Adding New Rules" section below for implementation tutorial
 
+## Copilot Development Rules
+
+**FOR AI ASSISTANTS**: When modifying or extending this plugin, follow these rules:
+
+### 1. Violation Marker Pattern (MANDATORY)
+
+All DRC checks MUST use this exact visualization pattern:
+
+```python
+def check_your_rule(self, board, marker_layer, config):
+    """Template for new DRC rule implementation"""
+    violations = 0
+    
+    # Your checking logic here
+    for item in items_to_check:
+        if violation_detected:
+            # Step 1: Create individual violation group
+            violation_group = pcbnew.PCB_GROUP(board)
+            violation_group.SetName(f"EMC_YourRule_{item_id}_{violations+1}")
+            board.Add(violation_group)
+            
+            # Step 2: Draw circle + text at violation location
+            self.draw_error_marker(
+                board, 
+                violation_position,  # pcbnew.VECTOR2I
+                "YOUR VIOLATION MESSAGE",  # String with optional {distance} placeholder
+                marker_layer, 
+                violation_group
+            )
+            
+            # Step 3 (OPTIONAL): Draw arrow to related component
+            if show_arrow_to_target:
+                self.draw_arrow(
+                    board,
+                    violation_position,  # Start point
+                    target_position,     # End point (related component)
+                    "→ TARGET_REF",      # Arrow label (component reference)
+                    marker_layer,
+                    violation_group
+                )
+            
+            violations += 1
+    
+    return violations
+```
+
+### 2. Configuration Integration
+
+**ALWAYS** support these config parameters:
+
+```toml
+[your_rule]
+enabled = true                    # REQUIRED: Enable/disable rule
+description = "What it checks"    # REQUIRED: Human-readable description
+violation_message = "TEXT"        # REQUIRED: What to display at violation
+
+# Rule-specific parameters (your custom logic)
+max_distance_mm = 2.0
+net_classes = ["HighSpeed"]
+net_patterns = ["VCC", "GND"]
+
+# Optional visual enhancements
+draw_arrow_to_target = true       # OPTIONAL: Show arrow to related item
+show_target_label = true          # OPTIONAL: Show component reference
+```
+
+### 3. Group Naming Convention
+
+**Group names MUST follow this pattern:**
+```python
+f"EMC_{RuleCategory}_{ItemIdentifier}_{SequenceNumber}"
+```
+
+**Examples:**
+- `"EMC_Decap_U1_VCC"` - Decoupling rule, IC U1, power net VCC
+- `"EMC_Via_15"` - Via stitching rule, violation #15
+- `"EMC_GndPlane_CLK_3"` - Ground plane rule, CLK net, violation #3
+- `"EMC_TraceWidth_PWR_1"` - Trace width rule, PWR net, violation #1
+
+**Why this matters:**
+- User can click "Select Items in Group" to see all markers for one violation
+- Deleting group removes circle + text + arrows together
+- Naming pattern helps debugging and log analysis
+
+### 4. Existing Helper Functions
+
+**DO NOT REIMPLEMENT** these - they already exist:
+
+```python
+# Distance calculation (2D Euclidean)
+self.get_distance(point1, point2)  # Returns distance in internal units
+
+# Draw violation marker (circle + text)
+self.draw_error_marker(board, position, message, layer, group)
+
+# Draw arrow with optional label
+self.draw_arrow(board, start_pos, end_pos, label, layer, group)
+
+# Clear old markers before new run
+self.clear_previous_markers(board)
+
+# Unit conversions
+pcbnew.FromMM(value_mm)  # mm → internal units
+pcbnew.ToMM(value_iu)    # internal units → mm
+```
+
+### 5. Registration in Run() Method
+
+**ALWAYS** add your check to `Run()` method with enable flag:
+
+```python
+def Run(self):
+    # ... existing code ...
+    
+    # X. Your Rule Verification (if enabled)
+    your_rule_cfg = self.config.get('your_rule', {})
+    if your_rule_cfg.get('enabled', False):  # Default: disabled for new rules
+        violations_found += self.check_your_rule(board, marker_layer, your_rule_cfg)
+```
+
+### 6. Error Handling Pattern
+
+```python
+try:
+    # Your checking logic
+    if not required_items:
+        print("WARNING: No items found for [your_rule] check. Skipping.")
+        return 0
+except Exception as e:
+    print(f"ERROR in [your_rule] check: {e}")
+    return 0
+```
+
+### 7. Testing Checklist
+
+Before committing new DRC rule:
+- [ ] Rule can be enabled/disabled via `enabled = true/false`
+- [ ] Violation markers visible on User.Comments layer
+- [ ] Each violation has unique group name
+- [ ] Clicking marker → right-click → "Select Items in Group" works
+- [ ] Re-running plugin clears old markers
+- [ ] Console shows "Found X violation(s)" count
+- [ ] README.md updated with usage example
+- [ ] Config file (`emc_rules.toml`) includes template
+
+### 8. Performance Guidelines
+
+- **Avoid O(n³)** algorithms - keep checks O(n²) or better
+- **Cache layer lookups**: Call `board.GetLayerID()` once, not in loops
+- **Use spatial indexing**: Group items by layer before distance checks
+- **Limit arrow drawing**: Only show arrows if `draw_arrow = true` in config
+
+### 9. Future Rule Integration
+
+When implementing rules from `emc_rules.toml` (currently disabled):
+
+**Priority order:**
+1. **Trace Width** - Power trace current capacity
+2. **Clearance/Creepage** - High-voltage safety (IEC60664-1)
+3. **Differential Pairs** - Length matching, impedance
+4. **High-Speed Signals** - Stub length, bend radius
+5. **EMI Filtering** - Ferrite bead placement
+
+Each follows the **same marker pattern** described above.
+
+---
+
 ## Installation
 
 1. Copy all files to your KiCad plugins directory:
@@ -71,7 +238,7 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
    - Linux: `~/.local/share/kicad/9.0/3rdparty/plugins/`
    - macOS: `~/Library/Application Support/kicad/9.0/3rdparty/plugins/`
 
-2. Required files:
+2. Required files (place directly in plugins directory, NOT in subfolder):
    ```
    emc_auditor_plugin.py  (main plugin code)
    emc_rules.toml         (configuration file)
@@ -86,6 +253,48 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
    ```
 
 4. Restart KiCad
+
+## Development & Testing
+
+When modifying the plugin code or configuration, use the sync script to quickly copy files to KiCad's plugins directory:
+
+### Setup Sync Script (First Time Only)
+
+1. Copy the template file:
+   ```powershell
+   Copy-Item sync_to_kicad.ps1.template sync_to_kicad.ps1
+   ```
+
+2. Edit `sync_to_kicad.ps1` and update the `$PluginsDir` variable with your KiCad path:
+   ```powershell
+   # Example paths:
+   $PluginsDir = "C:\Users\<YourUsername>\Documents\KiCad\9.0\3rdparty\plugins"
+   # Or for OneDrive:
+   $PluginsDir = "C:\Users\<YourUsername>\OneDrive\<Path>\KiCad\9.0\3rdparty\plugins"
+   ```
+
+3. The `sync_to_kicad.ps1` file is gitignored (contains local paths) and won't be committed.
+
+### Using the Sync Script
+
+```powershell
+# Run from repository root
+.\sync_to_kicad.ps1
+```
+
+This automatically copies:
+- `emc_auditor_plugin.py` → Plugin code
+- `emc_rules.toml` → Configuration
+- `emc_icon.png` → Toolbar icon
+
+**Development Workflow**:
+1. Edit plugin code or configuration in your repository
+2. Run `.\sync_to_kicad.ps1` to sync changes
+3. Restart KiCad PCB Editor to reload plugin
+4. Test changes on PCB design
+5. Repeat as needed
+
+**Note**: KiCad caches plugins on startup - you MUST restart KiCad PCB Editor after syncing changes.
 
 ## Usage
 
@@ -113,6 +322,81 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
 - **Red circles** mark critical signal vias missing nearby GND return vias
 - **Text "NO GND VIA"** indicates the violation type
 - **Each violation grouped**: Markers grouped as "EMC_Via_1", "EMC_Via_2", etc.
+
+### Ground Plane Continuity
+
+- **Red circles** mark locations where ground plane is missing under high-speed traces
+- **Text labels** show violation type:
+  - **"NO GND PLANE UNDER TRACE"** - Ground plane gap detected underneath signal trace
+  - **"INSUFFICIENT GND AROUND TRACE"** - Ground plane missing in clearance zone (1mm around trace)
+- **Arrows with "GND GAP" label** point from trace to location of ground plane gap
+- **Each violation grouped**: Markers grouped as "EMC_GndPlane_NetName_1", "EMC_GndPlane_NetName_2", etc.
+- **Applies to**: High-speed net classes (HighSpeed, Clock, Differential, USB, Ethernet)
+
+**EMC Rationale:**
+- Continuous ground under trace = minimal return path loop area (reduces radiated emissions)
+- Clearance around trace = ground "moat" shields adjacent circuits from EMI
+- Critical for signal integrity and EMC compliance
+
+### Violation Visualization Examples
+
+All rules use a **consistent visual language** for violations:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  VIOLATION MARKER COMPONENTS (Standard for All Rules)   │
+├─────────────────────────────────────────────────────────┤
+│  1. ⭕ Red Circle  - Marks exact violation location     │
+│  2. 📝 Text Label  - Describes violation type/distance  │
+│  3. ➡️  Arrow      - Points to related component (optional) │
+│  4. 🏷️  Label      - Identifies target component          │
+│  5. 📦 Group       - All markers grouped for easy delete  │
+└─────────────────────────────────────────────────────────┘
+
+Example 1: Decoupling Capacitor Violation
+
+    [U1 IC]                    [C15 Cap]
+       |                          |
+       ⭕ ← Red circle at IC pin
+       |
+   "CAP TOO FAR (4.2mm)" ← Distance text
+       |
+       ────────────────→ ← Arrow to nearest cap
+                "→ C15" ← Capacitor label
+
+   Group: "EMC_Decap_U1_VCC"
+
+
+Example 2: Via Stitching Violation
+
+    [Signal Via] ← High-speed trace via
+         ⭕ ← Red circle
+         |
+    "NO GND VIA" ← Violation text
+
+   Group: "EMC_Via_1"
+
+
+Example 3: Ground Plane Violation
+
+    [High-Speed Trace]
+    ════════════════ ← Clock trace
+           ⭕ ← Gap detected
+           |
+    "NO GND PLANE UNDER TRACE" ← Violation text
+           |
+           ────────→ ← Arrow to gap location
+              "GND GAP"
+
+   Group: "EMC_GndPlane_CLK_1"
+```
+
+**Visual Hierarchy:**
+- **Circle size**: 0.8mm radius (configurable)
+- **Text size**: 0.5mm height (configurable)
+- **Line width**: 0.1mm (configurable)
+- **Arrow length**: 0.5mm arrowhead
+- **All drawn on**: User.Comments layer (Cmts.User)
 
 ### Managing Markers
 

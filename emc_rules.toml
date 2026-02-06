@@ -19,6 +19,15 @@ marker_text_size_mm = 0.5
 # Group names: "EMC_Decap_U1_VCC" (decoupling) or "EMC_Via_1" (via stitching)
 # To delete: Click marker → right-click → "Select Items in Group" → Delete
 
+# Debug output control
+# When true: Shows detailed console output for ALL rules (tracks found, zones scanned, gap detection, via checks, capacitor distances)
+# When false: Shows only summary messages and errors (recommended for production use)
+# This setting affects:
+#   - Via stitching: Via scanning, distance checks, violation locations
+#   - Decoupling: IC/capacitor scanning, distance measurements, violation details
+#   - Ground plane: Track scanning, zone detection, gap analysis, violation positions
+verbose_logging = true
+
 # ======================================================================
 # VIA STITCHING RULES
 # ======================================================================
@@ -88,19 +97,127 @@ current_per_width = 1.0  # 1A per 1mm width for external layers
 violation_message = "TRACE TOO NARROW"
 
 # ======================================================================
-# GROUND PLANE RULES (Future Implementation)
+# GROUND PLANE RULES - High-Speed Signal Return Path Verification
 # ======================================================================
 [ground_plane]
-enabled = false
-description = "Verifies ground plane continuity and coverage"
+enabled = true
+description = "Verifies continuous ground plane underneath high-speed traces for proper return path and EMC compliance"
 
-# Minimum ground plane area percentage
+# Net classes requiring ground plane verification (high-speed signals)
+# These signals need continuous return path for signal integrity and low EMI
+critical_net_classes = ["HighSpeed", "Clock", "Differential", "USB", "Ethernet"]
+
+# Ground plane layer patterns (net names identifying ground planes)
+ground_net_patterns = ["GND", "GROUND", "VSS", "PGND", "AGND", "DGND"]
+
+# ======================================================================
+# GROUND PLANE CONTINUITY CHECK (underneath traces)
+# ======================================================================
+# Verifies that high-speed traces have unbroken ground plane directly beneath them
+# Critical for signal return path and reducing loop area (EMI reduction)
+
+check_continuity_under_trace = true
+
+# Maximum allowed gap in ground plane under high-speed trace (mm)
+# Any gap larger than this triggers violation
+max_gap_under_trace_mm = 0.5
+
+# Sample interval along trace for checking ground plane (mm)
+# Plugin will check ground plane presence at this interval along the trace
+sampling_interval_mm = 0.5
+
+# Layers to check: "adjacent" = check layer directly below trace
+#                  "all" = check all ground plane layers
+ground_plane_check_layers = "all"
+
+# Violation message for missing ground plane under trace
+violation_message_no_ground = "NO GND PLANE UNDER TRACE"
+
+# ======================================================================
+# GROUND PLANE CLEARANCE CHECK (around traces)
+# ======================================================================
+# Verifies that ground plane surrounds high-speed trace with adequate clearance
+# Creates clear "moat" around signal for EMC compliance (radiated emission reduction)
+
+check_clearance_around_trace = true
+
+# Minimum clearance zone around high-speed trace where ground plane must be present (mm)
+# Ground plane should be within this distance from trace edges
+min_clearance_around_trace_mm = 1.0
+
+# Maximum clearance zone - ground plane must not have gaps larger than this distance (mm)
+# This ensures the "return path moat" is continuous
+max_ground_gap_in_clearance_zone_mm = 2.0
+
+# Check both sides of trace (true) or just one side (false)
+check_both_sides = true
+
+# Violation message for insufficient ground plane around trace
+violation_message_insufficient_clearance = "INSUFFICIENT GND AROUND TRACE"
+
+# ======================================================================
+# GROUND PLANE COVERAGE (global check - optional)
+# ======================================================================
+# Minimum ground plane area percentage (disable if not needed)
+check_global_coverage = false
 min_coverage_percent = 30.0
 
-# Maximum gap in ground plane (mm)
-max_gap_mm = 5.0
+# Maximum gap in ground plane anywhere on board (mm)
+max_gap_anywhere_mm = 5.0
 
-violation_message = "GND PLANE GAP"
+violation_message_global = "GND PLANE GAP"
+
+# ======================================================================
+# ADVANCED PARAMETERS
+# ======================================================================
+
+# Ignore vias and pads when checking continuity 
+# (ground vias are expected to break plane locally)
+ignore_via_clearance = true
+ignore_pad_clearance = true
+
+# Minimum ground plane polygon size to consider (mm²)
+# Ignore small copper islands that are not proper ground planes
+min_ground_polygon_area_mm2 = 10.0
+
+# Layer stackup priority (check these layers first)
+# Format: layer number or layer name
+preferred_ground_layers = ["GND", "Bottom", "Inner2"]
+
+# ======================================================================
+# IMPLEMENTATION ALGORITHM
+# ======================================================================
+# 
+# For each high-speed net track segment:
+# 
+# 1. CONTINUITY CHECK (underneath):
+#    - Sample points along trace at 'sampling_interval_mm'
+#    - At each point, check if ground plane exists on adjacent layer directly below
+#    - If gap found > 'max_gap_under_trace_mm', mark violation
+#    - Draw violation marker at gap location with message "NO GND PLANE UNDER TRACE"
+#
+# 2. CLEARANCE CHECK (around):
+#    - For each trace segment, create clearance zone of 'min_clearance_around_trace_mm'
+#    - Check if ground plane exists within this zone on adjacent layers
+#    - Verify no ground plane gaps > 'max_ground_gap_in_clearance_zone_mm' in this zone
+#    - If insufficient ground plane coverage, mark "INSUFFICIENT GND AROUND TRACE"
+#
+# 3. LAYER DETECTION:
+#    - Identify ground plane layers by matching 'ground_net_patterns' in layer netlist
+#    - Check 'adjacent' layer (directly below signal layer) or 'all' ground layers
+#    - For multi-layer boards: Signal(L1) → GND(L2), Signal(L3) → GND(L2 or L4)
+#
+# 4. VIOLATION MARKERS:
+#    - Draw on User.Comments layer
+#    - Group as "EMC_GndPlane_NetName_1", "EMC_GndPlane_NetName_2", etc.
+#    - Include distance/gap measurement in label
+#
+# EMC RATIONALE:
+# - Continuous ground plane under trace = minimal return path loop area
+# - Clearance around trace = ground "moat" shields adjacent circuits from EMI
+# - Critical for clock signals, high-speed buses, and RF traces
+# - Reduces both conducted and radiated emissions
+#
 
 # ======================================================================
 # DIFFERENTIAL PAIR RULES (Future Implementation)

@@ -4,8 +4,7 @@
 - **IEC60664-1**: Insulation coordination for equipment within low-voltage systems
 - **IPC2221**: Generic Standard on Printed Board Design
 
-**Last Updated:** February 6, 2026  
-**Author:** Rockwell Automation
+**Last Updated:** February 6, 2026
 
 ---
 
