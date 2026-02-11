@@ -1,0 +1,169 @@
+# Example: How to Add a New EMC Rule
+# Copy this section to emc_rules.toml and implement the check function
+
+# ======================================================================
+# EXAMPLE: ANTENNA RULE CHECK (Custom Rule Template)
+# ======================================================================
+[antenna_rule]
+enabled = false  # Set to true after implementing check function
+description = "Detects antenna structures that could cause EMI"
+
+# Maximum stub length attached to signal traces (mm)
+max_stub_length_mm = 2.0
+
+# Net classes to check for antenna violations
+check_net_classes = ["HighSpeed", "Clock", "RF"]
+
+# Violation severity (info, warning, error)
+severity = "warning"
+
+# Violation message template
+violation_message = "ANTENNA: {length:.1f}mm stub"
+
+
+# ======================================================================
+# Implementation Guide for antenna_rule:
+# ======================================================================
+
+# Add this function to emc_auditor_plugin.py:
+
+"""
+def check_antenna_rule(self, board, marker_layer, config):
+    '''Check for antenna structures (long stubs on traces)'''
+    max_stub = pcbnew.FromMM(config.get('max_stub_length_mm', 2.0))
+    check_classes = config.get('check_net_classes', ['HighSpeed'])
+    violation_msg_template = config.get('violation_message', 'ANTENNA')
+    
+    violations = 0
+    for track in board.GetTracks():
+        if isinstance(track, pcbnew.PCB_TRACK):
+            net_class = track.GetNetClassName()
+            if net_class in check_classes:
+                # TODO: Implement stub detection algorithm
+                # 1. Find track endpoints
+                # 2. Check if endpoint has only one connection (stub)
+                # 3. Measure stub length
+                # 4. If > max_stub, mark violation
+                
+                # Example pseudocode:
+                # stub_length = self.calculate_stub_length(track)
+                # if stub_length > max_stub:
+                #     msg = violation_msg_template.format(length=pcbnew.ToMM(stub_length))
+                #     self.draw_error_marker(board, track.GetEnd(), msg, marker_layer)
+                #     violations += 1
+                pass
+    
+    return violations
+"""
+
+# Add to Run() method:
+
+"""
+# 3. Antenna Rule Verification (if enabled)
+antenna_cfg = self.config.get('antenna_rule', {})
+if antenna_cfg.get('enabled', False):
+    violations_found += self.check_antenna_rule(board, marker_layer, antenna_cfg)
+"""
+
+
+# ======================================================================
+# EXAMPLE: KEEPOUT AREA CHECK
+# ======================================================================
+[keepout_areas]
+enabled = false
+description = "Verifies components are not placed in keepout zones"
+
+# Minimum distance from board edge (mm)
+min_edge_distance_mm = 3.0
+
+# Minimum distance from mounting holes (mm)
+min_hole_distance_mm = 5.0
+
+# Component types to check (reference prefixes)
+check_components = ["U", "IC", "C", "R", "L"]
+
+violation_message = "TOO CLOSE TO EDGE/HOLE"
+
+
+# ======================================================================
+# EXAMPLE: THERMAL RELIEF CHECK
+# ======================================================================
+[thermal_relief]
+enabled = false
+description = "Checks thermal relief on power plane connections"
+
+# Minimum spoke width for thermal reliefs (mm)
+min_spoke_width_mm = 0.3
+
+# Power nets requiring thermal relief
+power_nets = ["GND", "VCC", "VDD"]
+
+# Components that should NOT have thermal relief (heatsinks)
+exclude_components = ["HS"]
+
+violation_message = "MISSING THERMAL RELIEF"
+
+
+# ======================================================================
+# EXAMPLE: SILKSCREEN CLEARANCE CHECK
+# ======================================================================
+[silkscreen_clearance]
+enabled = false
+description = "Verifies silkscreen does not overlap pads or vias"
+
+# Minimum clearance from pads (mm)
+min_pad_clearance_mm = 0.2
+
+# Minimum clearance from vias (mm)
+min_via_clearance_mm = 0.1
+
+violation_message = "SILKSCREEN OVERLAP"
+
+
+# ======================================================================
+# EXAMPLE: POWER CONSUMPTION ESTIMATE
+# ======================================================================
+[power_budget]
+enabled = false
+description = "Estimates power consumption and thermal dissipation"
+
+# Component power ratings (reference prefix: watts)
+component_power = [
+    ["U1", 2.5],  # MCU: 2.5W
+    ["U2", 1.0],  # Regulator: 1.0W
+    ["U3", 0.5]   # Op-amp: 0.5W
+]
+
+# Maximum total power (watts)
+max_total_power = 10.0
+
+# Warning threshold (percentage)
+warning_threshold_percent = 80.0
+
+violation_message = "POWER BUDGET EXCEEDED"
+
+
+# ======================================================================
+# Quick Reference: Common Pattern Matching
+# ======================================================================
+
+# Net name patterns (case-insensitive):
+#   ["VCC", "VDD", "PWR", "3V3", "5V", "1V8", "AVDD"]
+#   ["GND", "GROUND", "VSS", "AGND", "DGND", "PGND"]
+#   ["USB", "CAN", "RS485", "ETHERNET", "HDMI"]
+
+# Reference prefixes:
+#   ["U"]     - ICs (microcontrollers, logic chips)
+#   ["IC"]    - Integrated circuits
+#   ["C"]     - Capacitors
+#   ["R"]     - Resistors
+#   ["L"]     - Inductors
+#   ["D"]     - Diodes
+#   ["Q"]     - Transistors
+#   ["J"]     - Connectors
+#   ["TP"]    - Test points
+#   ["FB"]    - Ferrite beads
+#   ["HS"]    - Heatsinks
+
+# Net classes (must match PCB design):
+#   ["HighSpeed", "Clock", "Differential", "Power", "USB", "Ethernet"]

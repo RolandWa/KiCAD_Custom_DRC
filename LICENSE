@@ -1,0 +1,58 @@
+NON-COMMERCIAL PROPRIETARY LICENSE
+
+Copyright (c) 2026 EMC Auditor Plugin - All Rights Reserved
+
+This software and associated documentation files (the "Software") are proprietary
+and confidential. Unauthorized copying, distribution, or use of this Software,
+via any medium, is strictly prohibited.
+
+PERMISSIONS:
+
+1. NON-COMMERCIAL USE ONLY
+   - The Software may be used for personal, educational, and non-commercial
+     research purposes only.
+   - Any commercial use, including but not limited to use in commercial products,
+     services, or consulting, is strictly prohibited without prior written
+     permission from the copyright holder.
+
+2. MODIFICATIONS
+   - Any modifications, enhancements, or derivative works require explicit
+     written approval from the original author.
+   - Modified versions must retain this license and copyright notice.
+   - Modified versions may not be distributed without author approval.
+   - Polish: "Wszelkie zmiany kodu wymagają zgody autora."
+
+3. DISTRIBUTION
+   - Redistribution of the Software, in original or modified form, is prohibited
+     without explicit written permission from the copyright holder.
+   - Sharing for collaborative non-commercial projects requires author notification.
+
+4. ATTRIBUTION
+   - All copies or substantial portions of the Software must include this
+     copyright notice and license.
+   - Credit must be given to the original author in any published work,
+     presentation, or documentation that uses this Software.
+
+RESTRICTIONS:
+
+- You may NOT use this Software for commercial purposes.
+- You may NOT sell, lease, or sublicense the Software.
+- You may NOT remove or alter any copyright notices or this license.
+- You may NOT incorporate this Software into GPL/LGPL/AGPL licensed projects.
+- You may NOT use this Software in a manner that competes with the author's
+  commercial interests.
+
+DISCLAIMER:
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+For commercial licensing inquiries or permission requests, contact the author
+via GitHub repository: https://github.com/[username]/KiCAD_Custom_DRC
+
+This license is effective as of February 11, 2026.

@@ -1,0 +1,653 @@
+# EMC Auditor Plugin Configuration
+# KiCad PCB EMC Compliance Rules
+# Last Updated: 2026-02-06
+
+[general]
+# Plugin metadata
+plugin_name = "EMC Auditor"
+version = "1.2.0"
+description = "Electromagnetic Compatibility verification for PCB designs"
+
+# Layer for drawing violation markers
+marker_layer = "Cmts.User"
+marker_circle_radius_mm = 0.8
+marker_line_width_mm = 0.1
+marker_text_offset_mm = 1.2
+marker_text_size_mm = 0.5
+
+# Each violation is grouped individually for easy one-by-one deletion
+# Group names: "EMC_Decap_U1_VCC" (decoupling) or "EMC_Via_1" (via stitching)
+# To delete: Click marker → right-click → "Select Items in Group" → Delete
+
+# Debug output control
+# When true: Shows detailed report dialog with all violations, copy/paste support, and save button
+#            Creates timestamped report file (EMC_Audit_Report_YYYYMMDD_HHMMSS.txt)
+#            Includes: violation locations, distances, net names, component references
+# When false: Shows only summary message box with violation count (production mode)
+# This setting affects:
+#   - Via stitching: Via scanning, distance checks, violation locations
+#   - Decoupling: IC/capacitor scanning, distance measurements, violation details
+#   - Ground plane: Track scanning, zone detection, gap analysis, violation positions
+verbose_logging = true
+
+# ======================================================================
+# VIA STITCHING RULES
+# ======================================================================
+[via_stitching]
+enabled = true
+description = "Verifies that critical signal vias have nearby GND return vias"
+
+# Maximum distance from critical via to nearest GND via (mm)
+max_distance_mm = 2.0
+
+# Net classes that require via stitching verification
+critical_net_classes = ["HighSpeed", "Clock", "Differential"]
+
+# Net name patterns that identify ground vias (case-insensitive)
+ground_net_patterns = ["GND", "GROUND", "VSS", "PGND", "AGND"]
+
+# Violation message template
+violation_message = "NO GND VIA"
+
+# ======================================================================
+# DECOUPLING CAPACITOR RULES
+# ======================================================================
+[decoupling]
+enabled = false
+description = "Verifies proximity of decoupling capacitors to IC power pins"
+
+# Maximum distance from IC power pin to nearest capacitor (mm)
+max_distance_mm = 3.0
+
+# Component reference prefixes that require decoupling verification
+# (typically ICs: microcontrollers, logic chips, etc.)
+ic_reference_prefixes = ["U"]
+
+# Capacitor reference prefixes to search for
+capacitor_reference_prefixes = ["C"]
+
+# Power net name patterns (case-insensitive)
+# NOTE: Power nets are automatically EXCLUDED from EMI filtering checks
+# Power supply rails (VCC, 3V3, 5V, etc.) are not interface signals
+# They require decoupling capacitors (checked separately), not EMI filters
+power_net_patterns = ["VCC", "VDD", "PWR", "3V3", "5V", "1V8", "2V5", "12V", "+3V3", "+5V"]
+
+# Violation message template (supports {distance} placeholder)
+violation_message = "CAP TOO FAR ({distance:.1f}mm)"
+
+# Visual arrow showing nearest capacitor location
+draw_arrow_to_nearest_cap = true  # Draw arrow from IC pin to nearest capacitor
+show_capacitor_label = true       # Show capacitor reference (e.g., "→ C15")
+
+# SMART MATCHING: Only searches for capacitors connected to the SAME power net
+# Example: If checking U1 pin 7 (VCC net), only considers capacitors with 
+# one pad connected to VCC net. Ignores capacitors on 3V3, 5V, or other nets.
+
+# ======================================================================
+# TRACE WIDTH RULES (Future Implementation)
+# ======================================================================
+[trace_width]
+enabled = false
+description = "Verifies minimum trace widths for high-current nets"
+
+# Minimum trace width for power traces (mm)
+power_trace_min_width_mm = 0.5
+
+# Power net patterns
+power_net_patterns = ["VCC", "VDD", "PWR", "3V3", "5V"]
+
+# Current capacity rules (A per mm width)
+current_per_width = 1.0  # 1A per 1mm width for external layers
+
+violation_message = "TRACE TOO NARROW"
+
+# ======================================================================
+# GROUND PLANE RULES - High-Speed Signal Return Path Verification
+# ======================================================================
+[ground_plane]
+enabled = false
+description = "Verifies continuous ground plane underneath high-speed traces for proper return path and EMC compliance"
+
+# Net classes requiring ground plane verification (high-speed signals)
+# These signals need continuous return path for signal integrity and low EMI
+critical_net_classes = ["HighSpeed", "Clock", "Differential", "USB", "Ethernet"]
+
+# Ground plane layer patterns (net names identifying ground planes)
+ground_net_patterns = ["GND", "GROUND", "VSS", "PGND", "AGND", "DGND"]
+
+# ======================================================================
+# GROUND PLANE CONTINUITY CHECK (underneath traces)
+# ======================================================================
+# Verifies that high-speed traces have unbroken ground plane directly beneath them
+# Critical for signal return path and reducing loop area (EMI reduction)
+
+check_continuity_under_trace = true
+
+# Maximum allowed gap in ground plane under high-speed trace (mm)
+# Any gap larger than this triggers violation
+max_gap_under_trace_mm = 0.5
+
+# Sample interval along trace for checking ground plane (mm)
+# Plugin will check ground plane presence at this interval along the trace
+sampling_interval_mm = 0.5
+
+# Layers to check: "adjacent" = check layer directly below trace
+#                  "all" = check all ground plane layers
+ground_plane_check_layers = "all"
+
+# Violation message for missing ground plane under trace
+violation_message_no_ground = "NO GND PLANE UNDER TRACE"
+
+# ======================================================================
+# GROUND PLANE CLEARANCE CHECK (around traces)
+# ======================================================================
+# Verifies that ground plane surrounds high-speed trace with adequate clearance
+# Creates clear "moat" around signal for EMC compliance (radiated emission reduction)
+
+check_clearance_around_trace = true
+
+# Minimum clearance zone around high-speed trace where ground plane must be present (mm)
+# Ground plane should be within this distance from trace edges
+min_clearance_around_trace_mm = 1.0
+
+# Maximum clearance zone - ground plane must not have gaps larger than this distance (mm)
+# This ensures the "return path moat" is continuous
+max_ground_gap_in_clearance_zone_mm = 2.0
+
+# Check both sides of trace (true) or just one side (false)
+check_both_sides = true
+
+# Violation message for insufficient ground plane around trace
+violation_message_insufficient_clearance = "INSUFFICIENT GND AROUND TRACE"
+
+# ======================================================================
+# GROUND PLANE COVERAGE (global check - optional)
+# ======================================================================
+# Minimum ground plane area percentage (disable if not needed)
+check_global_coverage = false
+min_coverage_percent = 30.0
+
+# Maximum gap in ground plane anywhere on board (mm)
+max_gap_anywhere_mm = 5.0
+
+violation_message_global = "GND PLANE GAP"
+
+# ======================================================================
+# ADVANCED PARAMETERS
+# ======================================================================
+
+# Ignore vias and pads when checking continuity 
+# (ground vias are expected to break plane locally)
+# Distance in mm - violations within this radius of vias/pads will be ignored
+ignore_via_clearance = 0.5  # mm - ignore violations within 0.5mm of ground vias
+ignore_pad_clearance = 0.3  # mm - ignore violations within 0.3mm of ground pads
+
+# Minimum ground plane polygon size to consider (mm²)
+# Ignore small copper islands that are not proper ground planes
+min_ground_polygon_area_mm2 = 10.0
+
+# Layer stackup priority (check these layers first)
+# Format: layer number or layer name
+preferred_ground_layers = ["GND", "Bottom", "Inner2"]
+
+# ======================================================================
+# IMPLEMENTATION ALGORITHM
+# ======================================================================
+# 
+# For each high-speed net track segment:
+# 
+# 1. CONTINUITY CHECK (underneath):
+#    - Sample points along trace at 'sampling_interval_mm'
+#    - At each point, check if ground plane exists on adjacent layer directly below
+#    - If gap found > 'max_gap_under_trace_mm', mark violation
+#    - Draw violation marker at gap location with message "NO GND PLANE UNDER TRACE"
+#
+# 2. CLEARANCE CHECK (around):
+#    - For each trace segment, create clearance zone of 'min_clearance_around_trace_mm'
+#    - Check if ground plane exists within this zone on adjacent layers
+#    - Verify no ground plane gaps > 'max_ground_gap_in_clearance_zone_mm' in this zone
+#    - If insufficient ground plane coverage, mark "INSUFFICIENT GND AROUND TRACE"
+#
+# 3. LAYER DETECTION:
+#    - Identify ground plane layers by matching 'ground_net_patterns' in layer netlist
+#    - Check 'adjacent' layer (directly below signal layer) or 'all' ground layers
+#    - For multi-layer boards: Signal(L1) → GND(L2), Signal(L3) → GND(L2 or L4)
+#
+# 4. VIOLATION MARKERS:
+#    - Draw on User.Comments layer
+#    - Group as "EMC_GndPlane_NetName_1", "EMC_GndPlane_NetName_2", etc.
+#    - Include distance/gap measurement in label
+#
+# EMC RATIONALE:
+# - Continuous ground plane under trace = minimal return path loop area
+# - Clearance around trace = ground "moat" shields adjacent circuits from EMI
+# - Critical for clock signals, high-speed buses, and RF traces
+# - Reduces both conducted and radiated emissions
+#
+
+# ======================================================================
+# DIFFERENTIAL PAIR RULES (Future Implementation)
+# ======================================================================
+[differential_pairs]
+enabled = false
+description = "Verifies differential pair matching and spacing"
+
+# Maximum length mismatch between pairs (mm)
+max_length_mismatch_mm = 0.5
+
+# Target differential impedance (Ohms)
+target_impedance_ohm = 100.0
+
+# Tolerance percentage
+tolerance_percent = 10.0
+
+violation_message = "DIFF PAIR MISMATCH"
+
+# ======================================================================
+# HIGH-SPEED SIGNAL RULES (Future Implementation)
+# ======================================================================
+[high_speed]
+enabled = false
+description = "Verifies high-speed signal routing best practices"
+
+# Maximum stub length for high-speed signals (mm)
+max_stub_length_mm = 0.5
+
+# Minimum bend radius (mm)
+min_bend_radius_mm = 0.5
+
+# Net classes to check
+net_classes = ["HighSpeed", "Clock", "USB", "HDMI", "Ethernet"]
+
+violation_message = "HIGH-SPEED VIOLATION"
+
+# ======================================================================
+# EMI FILTERING RULES
+# ======================================================================
+[emi_filtering]
+enabled = false
+description = "Verifies EMI filtering on interface connectors (USB, Ethernet, HDMI, CAN, RS485)"
+
+# Connector identification - components with this reference prefix
+# Example: J1, J2, J3, etc.
+connector_prefix = "J"
+
+# Filter component prefixes to search for
+# R = Resistor, L = Inductor, FB = Ferrite Bead, C = Capacitor, D = Diode (TVS)
+filter_component_prefixes = ["R", "L", "FB", "C", "D"]
+
+# Maximum distance from connector to filter components (mm)
+# Components beyond this distance won't be considered part of the filter
+max_filter_distance_mm = 10.0
+
+# Minimum required filter type (hierarchy: Pi > T > LC > RC > L > C > R > simple)
+# Options:
+#   "Pi"     - Pi filter: Shunt-Series-Shunt topology
+#              LC variant: C-L-C or C-FB-C (Best EMI suppression, bidirectional)
+#              RC variant: C-R-C (Basic filtering with impedance matching)
+#   "T"      - T filter: Series-Shunt-Series topology
+#              LC variant: L-C-L or FB-C-FB (Good EMI suppression, series impedance)
+#              RC variant: R-C-R (Basic filtering, lossy but effective termination)
+#   "LC"     - LC filter (series inductor + shunt capacitor) - Good for power/signal lines
+#   "RC"     - RC filter (series resistor + shunt capacitor) - Basic filtering, lossy
+#   "L"      - Single series inductor or ferrite bead - Minimal filtering
+#   "C"      - Single shunt capacitor to ground - Minimal filtering
+#   "R"      - Single series resistor - Not recommended (lossy, no EMI filtering)
+#   "simple" - Any component present - Accepts anything
+#
+# TOPOLOGY DETECTION:
+#   - Series component: Both pads connected to signal net (in signal path)
+#   - Shunt component: One pad on signal, other pad on GND/power (bypass to ground)
+#   - Pi filter: Shunt → Series → Shunt (e.g., C22 to GND, R in line, C23 to GND)
+#   - T filter: Series → Shunt → Series (e.g., R1 in line, C to GND, R2 in line)
+min_filter_type = "LC"
+
+# Violation message shown on marker
+violation_message = "MISSING EMI FILTER"
+
+# ======================================================================
+# FILTER TOPOLOGY CLASSIFICATION CONFIGURATION
+# ======================================================================
+
+# Component class mapping (for topology analysis)
+# Maps component reference prefix to functional class
+[emi_filtering.component_classes]
+inductor_prefixes = ["L", "FB"]  # Ferrite beads (FB) are treated as inductors
+capacitor_prefixes = ["C"]
+resistor_prefixes = ["R"]
+diode_prefixes = ["D"]  # TVS diodes
+
+# Ground and power net patterns (for series/shunt detection)
+# Components with one pad on signal and other on these nets are classified as "shunt"
+# Components with both pads on signal net are classified as "series"
+#
+# EXAMPLES:
+#   Series component: R1 pad 1 → NET_A, R1 pad 2 → NET_A (resistor in signal path)
+#   Shunt component:  C1 pad 1 → NET_A, C1 pad 2 → GND (capacitor to ground)
+#   
+#   LC Pi filter:     C1 (shunt to GND) → L1 (series in line) → C2 (shunt to GND)
+#   RC Pi filter:     C1 (shunt to GND) → R1 (series in line) → C2 (shunt to GND)
+#   LC T filter:      L1 (series in line) → C1 (shunt to GND) → L2 (series in line)
+#   RC T filter:      R1 (series in line) → C1 (shunt to GND) → R2 (series in line)
+#
+ground_patterns = ["GND", "GROUND", "VSS", "AGND", "DGND", "PGND", "EARTH"]
+power_patterns = ["VCC", "VDD", "PWR", "+", "VBUS", "3V3", "5V", "1V8", "2V5", "12V", "+3V3", "+5V"]
+
+# Differential pair net name patterns (for differential filter detection)
+# Detects two types of differential filters:
+#   1. Common-mode choke: Inductor/ferrite bead (L/FB) with 4+ pins connecting both nets
+#   2. Common-mode capacitor: Capacitor (C) with one pad on signal_P and other pad on signal_N
+#
+# Each tuple is (positive_suffix, negative_suffix)
+[emi_filtering.differential_pairs]
+patterns = [
+    ["_P", "_N"],      # Generic: SIGNAL_P / SIGNAL_N
+    ["_p", "_n"],      # Lowercase variant
+    ["+", "-"],        # Generic: SIGNAL+ / SIGNAL-
+    ["DP", "DM"],      # USB: USB_DP / USB_DM
+    ["dp", "dm"],      # Lowercase USB
+    ["TXP", "TXN"],    # Ethernet TX: ETH_TXP / ETH_TXN
+    ["txp", "txn"],    # Lowercase
+    ["RXP", "RXN"],    # Ethernet RX: ETH_RXP / ETH_RXN
+    ["rxp", "rxn"],    # Lowercase
+    ["CANH", "CANL"],  # CAN bus: CAN_CANH / CAN_CANL
+    ["canh", "canl"],  # Lowercase CAN
+    ["LINE_P", "LINE_N"]  # Generic: LINE_P / LINE_N (10BASE-T1S Ethernet)
+]
+
+# Minimum pin count for common-mode choke detection
+# Common-mode chokes typically have 4 pins (2 signal pairs + center tap or shield)
+# Common-mode capacitors have 2 pins (one on each differential signal)
+min_common_mode_choke_pins = 4
+
+# ======================================================================
+# CLEARANCE AND CREEPAGE RULES - IEC60664-1 / IPC2221
+# ======================================================================
+#
+# ⚠️  IMPLEMENTATION STATUS: CONFIGURATION TEMPLATE ONLY
+# 
+# This section provides production-ready configuration for clearance/creepage checking,
+# but the Python implementation is NOT YET COMPLETE.
+#
+# Current state:
+#   ✅ Complete TOML configuration (271 lines) - ready to use
+#   ✅ Stub function available in emc_auditor_plugin.py (150 lines with TODO comments)
+#   ❌ Full implementation pending (estimated 500-800 lines, 10-20 hours)
+#
+# The stub function check_clearance_creepage() provides:
+#   - Comprehensive TODO list with implementation steps
+#   - Algorithm outline for voltage domain parsing
+#   - Helper function signatures needed
+#   - Configuration reference notes
+#
+# To implement this check:
+#   1. Read the stub function docstring in emc_auditor_plugin.py (line ~1073)
+#   2. Follow the 7-step TODO list for complete implementation
+#   3. Uncomment the Run() method call (line ~239)
+#   4. Set enabled = true below after testing
+#
+[clearance_creepage]
+enabled = true
+description = "Verifies electrical clearance and creepage distances per IEC60664-1 and IPC2221 (Phase 1: pad-to-pad clearance)"
+
+# Standard selection: "IEC60664-1", "IPC2221", or "BOTH"
+standard = "IEC60664-1"
+
+# Overvoltage category (IEC60664-1)
+# I   - Equipment with transient limitation (electronics)
+# II  - Energy-consuming equipment (appliances)
+# III - Distribution and fixed installation
+# IV  - Origin of installation (utility connection)
+overvoltage_category = "II"
+
+# Pollution degree (IEC60664-1)
+# 1 - No pollution or dry, non-conductive pollution
+# 2 - Non-conductive pollution, occasional condensation
+# 3 - Conductive pollution or frequent condensation
+# 4 - Continuous conductive pollution (water, metal dust)
+pollution_degree = 2
+
+# Material group (IEC60664-1 creepage)
+# I    - CTI ≥ 600 (best insulation, e.g., PTFE, ceramics)
+# II   - CTI 400-599 (standard FR4)
+# IIIa - CTI 175-399 (lower grade materials)
+# IIIb - CTI 100-174 (poor insulation)
+material_group = "II"  # Standard FR4 PCB material
+
+# Altitude above sea level (meters)
+# Affects clearance due to air density
+# Standard: ≤2000m, High altitude: >2000m requires increased clearance
+altitude_m = 1000
+
+# ======================================================================
+# VOLTAGE-TO-CLEARANCE TABLES (IEC60664-1)
+# ======================================================================
+
+# Clearance distances for Overvoltage Category II, Pollution Degree 2
+# Format: [working_voltage_rms, clearance_mm]
+# Based on IEC60664-1 Table F.1 and F.2
+[[clearance_creepage.iec60664_clearance_table]]
+voltage_class = "Extra Low Voltage (ELV)"
+voltages = [
+    [12, 0.5],      # 12V RMS
+    [24, 0.5],      # 24V RMS
+    [50, 0.6],      # 50V RMS (SELV limit)
+]
+
+[[clearance_creepage.iec60664_clearance_table]]
+voltage_class = "Low Voltage (LV)"
+voltages = [
+    [100, 1.0],     # 100V RMS
+    [150, 1.5],     # 150V RMS
+    [230, 2.5],     # 230V RMS (EU mains)
+    [300, 3.0],     # 300V RMS
+    [400, 4.0],     # 400V RMS (3-phase)
+]
+
+[[clearance_creepage.iec60664_clearance_table]]
+voltage_class = "High Voltage (HV)"
+voltages = [
+    [600, 5.5],     # 600V RMS
+    [800, 8.0],     # 800V RMS
+    [1000, 10.0],   # 1000V RMS
+]
+
+# ======================================================================
+# CREEPAGE DISTANCE TABLES (IEC60664-1)
+# ======================================================================
+
+# Creepage distances for Material Group II (FR4), Pollution Degree 2
+# Format: [working_voltage_rms, creepage_mm]
+# Based on IEC60664-1 Table F.4
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II (FR4)"
+pollution = "Pollution Degree 2"
+voltages = [
+    [12, 0.4],      # 12V RMS
+    [24, 0.5],      # 24V RMS
+    [50, 0.8],      # 50V RMS
+    [100, 1.25],    # 100V RMS
+    [150, 1.8],     # 150V RMS
+    [230, 2.5],     # 230V RMS (EU mains)
+    [300, 3.2],     # 300V RMS
+    [400, 4.0],     # 400V RMS
+    [600, 5.6],     # 600V RMS
+    [800, 7.5],     # 800V RMS
+    [1000, 10.0],   # 1000V RMS
+]
+
+# ======================================================================
+# IPC2221 CLEARANCE/CREEPAGE TABLES (Alternative Standard)
+# ======================================================================
+
+# IPC2221 Table 6-1: Conductor Spacing (External layers)
+# More conservative than IEC60664-1 for some voltages
+[[clearance_creepage.ipc2221_spacing_table]]
+layer_type = "External (B1-B6)"
+condition = "Uncoated"
+voltages = [
+    [0, 0.13],      # 0-15V DC
+    [30, 0.13],     # 16-30V DC
+    [50, 0.13],     # 31-50V DC
+    [100, 0.25],    # 51-100V DC
+    [150, 0.4],     # 101-150V DC
+    [170, 0.5],     # 151-170V DC
+    [250, 0.8],     # 171-250V DC
+    [300, 0.8],     # 251-300V DC
+    [500, 1.5],     # 301-500V DC
+]
+
+[[clearance_creepage.ipc2221_spacing_table]]
+layer_type = "Internal (B2-B4)"
+condition = "Coated"
+voltages = [
+    [0, 0.1],       # 0-15V DC
+    [30, 0.1],      # 16-30V DC
+    [50, 0.1],      # 31-50V DC
+    [100, 0.2],     # 51-100V DC
+    [150, 0.32],    # 101-150V DC
+    [170, 0.4],     # 151-170V DC
+    [250, 0.6],     # 171-250V DC
+    [300, 0.6],     # 251-300V DC
+    [500, 1.27],    # 301-500V DC
+]
+
+# ======================================================================
+# VOLTAGE DOMAIN DEFINITIONS
+# ======================================================================
+
+# Define voltage domains on your PCB
+# The plugin will check clearance/creepage between different domains
+#
+# BEST PRACTICE: Use KiCad Net Classes for voltage domain assignment
+#   1. In KiCad PCB Editor: File → Board Setup → Net Classes
+#   2. Create net classes matching domain names (e.g., "MAINS_L", "EXTRA_LOW_VOLTAGE")
+#   3. Assign nets to appropriate classes in schematic or PCB
+#   4. Plugin automatically detects nets by class name (preferred method)
+#
+# FALLBACK: net_patterns array
+#   - Used for nets not assigned to a Net Class
+#   - Case-insensitive pattern matching on net names
+#   - Example: "AC_L" matches nets named "AC_L", "ac_l", "AC_LINE", etc.
+#
+# Each domain requires:
+#   - name: Unique identifier (matches Net Class name if using classes)
+#   - description: Human-readable explanation
+#   - voltage_rms: RMS voltage in volts (for AC) or DC voltage
+#   - net_patterns: Array of net name patterns (fallback if no Net Class)
+#   - requires_reinforced_insulation: true = 2× clearance (safety-critical)
+#
+[[clearance_creepage.voltage_domains]]
+name = "MAINS_L"
+description = "AC Mains Live (230V AC)"
+voltage_rms = 230
+net_patterns = ["AC_L", "MAINS_L", "L_MAINS", "LINE"]
+requires_reinforced_insulation = true  # Double the clearance
+
+[[clearance_creepage.voltage_domains]]
+name = "MAINS_N"
+description = "AC Mains Neutral"
+voltage_rms = 0  # Referenced to ground
+net_patterns = ["AC_N", "MAINS_N", "N_MAINS", "NEUTRAL"]
+
+[[clearance_creepage.voltage_domains]]
+name = "HIGH_VOLTAGE_DC"
+description = "High voltage DC bus (400V)"
+voltage_rms = 400
+net_patterns = ["HV+", "HV-", "HVDC", "400V"]
+requires_reinforced_insulation = true
+
+[[clearance_creepage.voltage_domains]]
+name = "LOW_VOLTAGE_DC"
+description = "Low voltage DC (12-48V)"
+voltage_rms = 24
+net_patterns = ["12V", "24V", "48V", "+12V", "+24V", "+48V"]
+
+[[clearance_creepage.voltage_domains]]
+name = "EXTRA_LOW_VOLTAGE"
+description = "Extra low voltage / SELV (≤50V)"
+voltage_rms = 5
+net_patterns = ["3V3", "5V", "12V", "+3V3", "+5V", "VCC", "VDD"]
+
+[[clearance_creepage.voltage_domains]]
+name = "GROUND"
+description = "Ground / chassis reference"
+voltage_rms = 0
+net_patterns = ["GND", "GROUND", "PGND", "AGND", "DGND", "CHASSIS", "PE"]
+
+# ======================================================================
+# SAFETY ISOLATION REQUIREMENTS
+# ======================================================================
+
+# Define which domain pairs require specific isolation levels
+[[clearance_creepage.isolation_requirements]]
+domain_a = "MAINS_L"
+domain_b = "EXTRA_LOW_VOLTAGE"
+isolation_type = "reinforced"  # Options: "basic", "supplementary", "reinforced"
+min_clearance_mm = 6.0  # IEC60664-1 reinforced insulation @ 230V
+min_creepage_mm = 8.0
+description = "Mains to SELV - Reinforced insulation required"
+
+[[clearance_creepage.isolation_requirements]]
+domain_a = "HIGH_VOLTAGE_DC"
+domain_b = "LOW_VOLTAGE_DC"
+isolation_type = "basic"
+min_clearance_mm = 4.0
+min_creepage_mm = 5.0
+description = "HV to LV - Basic insulation"
+
+[[clearance_creepage.isolation_requirements]]
+domain_a = "MAINS_L"
+domain_b = "GROUND"
+isolation_type = "basic"
+min_clearance_mm = 2.5  # IEC60664-1 basic insulation @ 230V
+min_creepage_mm = 3.2
+description = "Mains to Ground - Basic insulation"
+
+# ======================================================================
+# CHECKING PARAMETERS
+# ======================================================================
+
+# Check types enabled
+check_clearance = true       # Air gap distance (Phase 1: 2D pad-to-pad only)
+check_creepage = false       # Surface distance (NOT YET IMPLEMENTED)
+check_different_layers = false  # Check clearance between layers (NOT YET IMPLEMENTED)
+
+# Trace-to-trace minimum spacing (overrides if larger than standard)
+min_trace_spacing_mm = 0.2
+
+# Pad-to-pad minimum spacing
+min_pad_spacing_mm = 0.3
+
+# Safety margin multiplier (e.g., 1.2 = 20% safety margin)
+safety_margin_factor = 1.2
+
+# Report mode: "violations_only" or "all_distances"
+report_mode = "violations_only"
+
+# Violation message templates
+violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+
+# ======================================================================
+# IMPLEMENTATION NOTES
+# ======================================================================
+
+# To implement clearance/creepage checking:
+# 
+# 1. Parse voltage_domains and identify nets by pattern matching
+# 2. For each pair of nets from different domains:
+#    a. Calculate clearance (minimum 3D distance, air gap)
+#    b. Calculate creepage (minimum surface distance along PCB)
+# 3. Look up required distance from:
+#    - isolation_requirements table (if specific pair defined)
+#    - OR iec60664/ipc2221 tables based on voltage difference
+# 4. Apply safety_margin_factor
+# 5. If actual < required, draw violation marker
+#
+# Advanced features:
+# - Detect slots/cutouts that break creepage paths
+# - Consider conformal coating (reduces required creepage)
+# - Check for proper isolation barriers (physical separators)
+# - Verify PCB thickness for internal layer clearance
+# - Temperature derating for high-temperature operation

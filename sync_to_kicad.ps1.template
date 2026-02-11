@@ -1,0 +1,78 @@
+# EMC Auditor Plugin - Sync to KiCad (TEMPLATE)
+# Copy this file to sync_to_kicad.ps1 and customize the $PluginsDir path
+
+$RepoDir = $PSScriptRoot
+
+# CUSTOMIZE THIS PATH for your KiCad installation
+# Examples:
+#   Windows: "C:\Users\<YourUsername>\Documents\KiCad\9.0\3rdparty\plugins"
+#   Or OneDrive: "C:\Users\<YourUsername>\OneDrive - <Company>\Path\To\KiCad\9.0\3rdparty\plugins"
+$PluginsDir = "CHANGE_THIS_TO_YOUR_KICAD_PLUGINS_PATH"
+
+Write-Host "`n🔄 Synchronizing EMC Auditor Plugin to KiCad...`n" -ForegroundColor Cyan
+
+# Verify plugin directory is configured
+if ($PluginsDir -eq "CHANGE_THIS_TO_YOUR_KICAD_PLUGINS_PATH") {
+    Write-Host "❌ ERROR: Please configure your KiCad plugins directory!" -ForegroundColor Red
+    Write-Host "`nOpen sync_to_kicad.ps1 and update the `$PluginsDir variable." -ForegroundColor Yellow
+    Write-Host "`nExample paths:" -ForegroundColor Cyan
+    Write-Host "  Windows Standard:  C:\Users\<YourUsername>\Documents\KiCad\9.0\3rdparty\plugins" -ForegroundColor Gray
+    Write-Host "  Windows OneDrive:  C:\Users\<YourUsername>\OneDrive\<Path>\KiCad\9.0\3rdparty\plugins" -ForegroundColor Gray
+    Write-Host "  Linux:             ~/.local/share/kicad/9.0/3rdparty/plugins" -ForegroundColor Gray
+    Write-Host "  macOS:             ~/Library/Application Support/kicad/9.0/3rdparty/plugins`n" -ForegroundColor Gray
+    exit 1
+}
+
+# Verify plugin directory exists
+if (-not (Test-Path $PluginsDir)) {
+    Write-Host "❌ ERROR: KiCad plugins directory not found!" -ForegroundColor Red
+    Write-Host "   Path: $PluginsDir" -ForegroundColor Yellow
+    Write-Host "`nPlease verify the path is correct or create the directory.`n" -ForegroundColor Yellow
+    exit 1
+}
+
+# Files to synchronize (flat structure, no subfolder)
+$FilesToSync = @(
+    "emc_auditor_plugin.py",
+    "clearance_creepage.py",
+    "emc_rules.toml",
+    "emc_icon.png"
+)
+
+$SyncedCount = 0
+$FailedCount = 0
+
+foreach ($File in $FilesToSync) {
+    $SourcePath = Join-Path $RepoDir $File
+    
+    if (Test-Path $SourcePath) {
+        try {
+            Copy-Item $SourcePath -Destination $PluginsDir -Force
+            $FileInfo = Get-Item (Join-Path $PluginsDir $File)
+            Write-Host "✅ $File" -NoNewline -ForegroundColor Green
+            Write-Host " ($([math]::Round($FileInfo.Length/1KB,2)) KB)" -ForegroundColor Gray
+            $SyncedCount++
+        } catch {
+            Write-Host "❌ Failed to copy $File : $_" -ForegroundColor Red
+            $FailedCount++
+        }
+    } else {
+        Write-Host "⚠️  File not found: $File" -ForegroundColor Yellow
+        $FailedCount++
+    }
+}
+
+Write-Host "`n📊 Sync Summary:" -ForegroundColor Cyan
+Write-Host "   Synced: $SyncedCount file(s)" -ForegroundColor Green
+if ($FailedCount -gt 0) {
+    Write-Host "   Failed: $FailedCount file(s)" -ForegroundColor Red
+}
+
+Write-Host "`n📂 KiCad Plugin Location:" -ForegroundColor Cyan
+Write-Host "   $PluginsDir`n" -ForegroundColor Gray
+
+# List plugin files in target directory
+Write-Host "📁 Plugin Files in KiCad:" -ForegroundColor Cyan
+Get-ChildItem $PluginsDir -File | Where-Object { $_.Name -like "emc_*" } | Format-Table Name, @{Label="Size (KB)";Expression={[math]::Round($_.Length/1KB,2)}}, LastWriteTime -AutoSize
+
+Write-Host "✅ Sync complete! Restart KiCad PCB Editor to load changes.`n" -ForegroundColor Green

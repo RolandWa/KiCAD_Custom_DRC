@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local configuration files (may contain sensitive paths)
+sync_to_kicad.ps1
+sync_to_kicad_local.ps1
+*.local.ps1
+local_config.toml
+
+# Test files and temporary data
+test_*.kicad_pcb
+test_*.kicad_pro
+*.bak
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# KiCad backup files
+*-backups/
+*-bak
+*.kicad_pcb-bak
+*.kicad_sch-bak
+
+# JLCPCB and PCB manufacturer outputs (if generated locally)
+JLCPCB/production/
+PCBWAY/production/
+gerber_*.zip
+bom_*.csv
+cpl_*.csv
+
+# Documentation build artifacts
+docs/_build/
+*.pdf.bak
