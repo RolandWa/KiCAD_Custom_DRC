@@ -56,14 +56,7 @@ class EMIFilteringChecker:
         # Results tracking
         self.violation_count = 0
     
-    def log(self, msg, force=False):
-        """Log message to console and report (only if verbose or force=True)"""
-        if self.verbose or force:
-            print(msg)
-            if self.verbose:
-                self.report_lines.append(msg)
-    
-    def check(self, draw_marker_func, draw_arrow_func, get_distance_func):
+    def check(self, draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func):
         """
         Main entry point - performs EMI filtering verification.
         
@@ -74,11 +67,14 @@ class EMIFilteringChecker:
             draw_marker_func: Function(board, pos, msg, layer, group)
             draw_arrow_func: Function(board, start, end, label, layer, group)
             get_distance_func: Function(pos1, pos2) returns distance
+            log_func: Function(msg, force=False) for logging
+            create_group_func: Function(board, check_type, identifier, number) creates PCB_GROUP
         
         Returns:
             int: Number of violations found
         """
         # Store utility functions for reuse
+        self.log = log_func  # Centralized logger from main plugin
         self.draw_marker = draw_marker_func
         self.draw_arrow = draw_arrow_func
         self.get_distance = get_distance_func
@@ -169,18 +165,14 @@ class EMIFilteringChecker:
                     net_name = str(pad.GetNet().GetNetname()) if pad.GetNet() else "NC"
                     
                     if filter_type is None:
-                        # No filter found
-                        violation_group = pcbnew.PCB_GROUP(self.board)
-                        violation_group.SetName(f"EMC_EMI_{conn_ref}_Pad{pad_num}_NoFilter")
-                        self.board.Add(violation_group)
+                        # No filter found - use centralized utility
+                        violation_group = create_group_func(self.board, "EMI", f"{conn_ref}_Pad{pad_num}_NoFilter", None)
                         
                         marker_text = f"{violation_msg}\n({interface_type})"
                         self.draw_marker(self.board, pad_pos, marker_text, self.marker_layer, violation_group)
                     else:
-                        # Insufficient filter
-                        violation_group = pcbnew.PCB_GROUP(self.board)
-                        violation_group.SetName(f"EMC_EMI_{conn_ref}_Pad{pad_num}_WeakFilter")
-                        self.board.Add(violation_group)
+                        # Insufficient filter - use centralized utility
+                        violation_group = create_group_func(self.board, "EMI", f"{conn_ref}_Pad{pad_num}_WeakFilter", None)
                         
                         marker_text = f"WEAK FILTER\n({filter_type}<{min_filter_type})"
                         self.draw_marker(self.board, pad_pos, marker_text, self.marker_layer, violation_group)

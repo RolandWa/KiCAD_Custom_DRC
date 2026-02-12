@@ -58,14 +58,7 @@ class ClearanceCreepageChecker:
         # Results tracking
         self.violation_count = 0
     
-    def log(self, msg, force=False):
-        """Log message to console and report (only if verbose or force=True)"""
-        if self.verbose or force:
-            print(msg)
-            if self.verbose:
-                self.report_lines.append(msg)
-    
-    def check(self, draw_marker_func, draw_arrow_func, get_distance_func):
+    def check(self, draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func):
         """
         Main entry point - performs complete clearance/creepage verification.
         
@@ -76,11 +69,14 @@ class ClearanceCreepageChecker:
             draw_marker_func: Function(board, pos, msg, layer, group) to draw error markers
             draw_arrow_func: Function(board, start, end, label, layer, group) to draw arrows
             get_distance_func: Function(pos1, pos2) to calculate distance between points
+            log_func: Function(msg, force=False) for logging
+            create_group_func: Function(board, check_type, identifier, number) creates PCB_GROUP
         
         Returns:
             int: Number of violations found
         """
         # Store utility functions for reuse throughout check
+        self.log = log_func  # Centralized logger from main plugin
         self.draw_marker = draw_marker_func
         self.draw_arrow = draw_arrow_func
         self.get_distance = get_distance_func
@@ -157,7 +153,7 @@ class ClearanceCreepageChecker:
                 # Check for violation
                 if actual_mm < required_mm:
                     self._create_clearance_violation_marker(
-                        domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b
+                        domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b, create_group_func
                     )
                 else:
                     self.log("  ✓ PASS")
@@ -575,7 +571,7 @@ class ClearanceCreepageChecker:
         # Fallback
         return 0.5
     
-    def _create_clearance_violation_marker(self, domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b):
+    def _create_clearance_violation_marker(self, domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b, create_group_func):
         """
         Draw violation marker for insufficient clearance.
         
@@ -588,14 +584,11 @@ class ClearanceCreepageChecker:
             point2: pcbnew.VECTOR2I, closest point on domain B
             net_a: str, net name on domain A
             net_b: str, net name on domain B
+            create_group_func: Function to create violation groups
         """
-        # Create unique group for this violation
+        # Create unique group using centralized utility
         self.violation_count += 1
-        group_name = f"EMC_Clearance_{domain_a}_{domain_b}_{self.violation_count}"
-        
-        violation_group = pcbnew.PCB_GROUP(self.board)
-        violation_group.SetName(group_name)
-        self.board.Add(violation_group)
+        violation_group = create_group_func(self.board, "Clearance", f"{domain_a}_{domain_b}", self.violation_count)
         
         # Format violation message
         msg = f"CLEARANCE: {actual_mm:.2f}mm < {required_mm:.2f}mm\n{domain_a}-{domain_b}\n{net_a} ↔ {net_b}"

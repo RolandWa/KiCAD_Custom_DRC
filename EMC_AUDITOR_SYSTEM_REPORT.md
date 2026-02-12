@@ -54,6 +54,7 @@ EMCAuditorPlugin (pcbnew.ActionPlugin)
 └── Checker Delegation Methods:
     ├── check_via_stitching() - Delegates to ViaStitchingChecker
     ├── check_decoupling() - Delegates to DecouplingChecker
+    ├── check_ground_plane() - Delegates to GroundPlaneChecker
     ├── check_emi_filtering() - Delegates to EMIFilteringChecker
     └── check_clearance_creepage() - Delegates to ClearanceCreepageChecker
 ```
@@ -108,6 +109,17 @@ ClearanceCreepageChecker
 ├── Voltage domain mapping via Net Classes
 ├── Clearance (air gap) and creepage (surface path) verification
 └── Stub implementation with comprehensive TODO structure
+```
+
+**5. `ground_plane.py` (495 lines)**
+```
+GroundPlaneChecker
+├── Ground plane continuity under high-speed traces
+├── Continuity and clearance zone checking
+├── Layer-indexed zone lookup for performance (O(1) instead of O(n))
+├── Via/pad clearance filtering (ignores expected gaps)
+├── Progress dialog for large boards (cancelable)
+└── Adjacent or all-layer checking modes
 ```
 
 **Module Integration Pattern:**

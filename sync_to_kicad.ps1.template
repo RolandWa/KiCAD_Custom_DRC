@@ -40,6 +40,7 @@ $FilesToSync = @(
     "decoupling.py",           # Decoupling capacitor checker module
     "emi_filtering.py",        # EMI filtering checker module
     "clearance_creepage.py",   # Clearance/creepage checker module
+    "ground_plane.py",         # Ground plane continuity checker module
     "emc_rules.toml",          # Configuration file
     "emc_icon.png"             # Toolbar icon
 )

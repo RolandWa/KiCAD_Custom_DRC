@@ -19,11 +19,12 @@ The EMC Auditor plugin automatically checks your PCB design for electromagnetic 
   - `decoupling.py` - Decoupling capacitor proximity checker
   - `emi_filtering.py` - EMI filtering verification for connectors
   - `clearance_creepage.py` - Safety compliance checker (stub implementation)
+  - `ground_plane.py` - Ground plane continuity checker
 - **Shared reporting** - All modules write to common report log
 - **Better extensibility** - Easy to add new checkers following established pattern
 
 ### 📦 Installation Changes
-- **4 new Python module files required** - Must copy all module files to plugins directory
+- **5 new Python module files required** - Must copy all module files to plugins directory
 - **Updated sync script** - Automatically copies all required files
 
 ## Previous Updates - v1.2.0 (February 11, 2026)
@@ -335,6 +336,7 @@ Each follows the **same marker pattern** described above.
    decoupling.py          (decoupling capacitor checker module)
    emi_filtering.py       (EMI filtering checker module)
    clearance_creepage.py  (clearance/creepage checker module)
+   ground_plane.py        (ground plane continuity checker module)
    emc_rules.toml         (configuration file)
    emc_icon.png           (toolbar icon - KiCad 9.x requires PNG)
    ```

@@ -53,14 +53,7 @@ class ViaStitchingChecker:
         # Results tracking
         self.violation_count = 0
     
-    def log(self, msg, force=False):
-        """Log message to console and report (only if verbose or force=True)"""
-        if self.verbose or force:
-            print(msg)
-            if self.verbose:
-                self.report_lines.append(msg)
-    
-    def check(self, draw_marker_func, draw_arrow_func, get_distance_func):
+    def check(self, draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func):
         """
         Main entry point - performs via stitching verification.
         
@@ -71,11 +64,14 @@ class ViaStitchingChecker:
             draw_marker_func: Function(board, pos, msg, layer, group)
             draw_arrow_func: Function(board, start, end, label, layer, group)
             get_distance_func: Function(pos1, pos2) returns distance
+            log_func: Function(msg, force=False) for logging
+            create_group_func: Function(board, check_type, identifier, number) creates PCB_GROUP
         
         Returns:
             int: Number of violations found
         """
         # Store utility functions for reuse
+        self.log = log_func  # Centralized logger from main plugin
         self.draw_marker = draw_marker_func
         self.draw_arrow = draw_arrow_func
         self.get_distance = get_distance_func
@@ -182,11 +178,9 @@ class ViaStitchingChecker:
             if not found:
                 self.log(f"    ❌ NO GND VIA within {max_dist_mm} mm (nearest: {pcbnew.ToMM(nearest_dist):.2f} mm)", force=True)
                 
-                # Create violation group
+                # Create violation group using centralized utility
                 self.violation_count += 1
-                violation_group = pcbnew.PCB_GROUP(self.board)
-                violation_group.SetName(f"EMC_Via_{net_name}_{self.violation_count}")
-                self.board.Add(violation_group)
+                violation_group = create_group_func(self.board, "Via", net_name, self.violation_count)
                 
                 # Draw marker at critical via location
                 self.draw_marker(

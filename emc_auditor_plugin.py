@@ -46,6 +46,13 @@ except ImportError as e:
     print(f"WARNING: Could not import emi_filtering module: {e}")
     EMIFilteringChecker = None
 
+# Import ground plane checking module
+try:
+    from ground_plane import GroundPlaneChecker
+except ImportError as e:
+    print(f"WARNING: Could not import ground_plane module: {e}")
+    GroundPlaneChecker = None
+
 class EMCSimpleDialog(wx.Dialog):
     """Simple dialog for quick audit summary with config file access"""
     def __init__(self, parent, message, violations_count, config_path=None):
@@ -476,10 +483,13 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
         violations = checker.check(
             draw_marker_func=self.draw_error_marker,
             draw_arrow_func=self.draw_arrow,
-            get_distance_func=self.get_distance
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
         )
         
         return violations
@@ -516,416 +526,59 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
         violations = checker.check(
             draw_marker_func=self.draw_error_marker,
             draw_arrow_func=self.draw_arrow,
-            get_distance_func=self.get_distance
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
         )
         
         return violations
 
     def check_ground_plane(self, board, marker_layer, config):
-        """Check ground plane continuity under and around high-speed traces"""
-        # Check if verbose logging is enabled (from main config or ground_plane section)
+        """Check ground plane continuity under and around high-speed traces
+        
+        This function delegates to the GroundPlaneChecker module for implementation.
+        Complete configuration is in emc_rules.toml [ground_plane] section.
+        
+        The checker reuses utility functions from this plugin:
+        - draw_error_marker(): Draw violation markers on User.Comments layer
+        - draw_arrow(): Draw directional arrows between violation points
+        - get_distance(): Calculate distance between two points
+        
+        Returns:
+            int: Number of violations found
+        """
+        # Check if module is available
+        if GroundPlaneChecker is None:
+            print("⚠️  Ground plane checker module not available")
+            print("HINT: Ensure ground_plane.py is in same directory as plugin")
+            return 0
+        
+        # Create checker instance with shared report lines
         verbose = self.config.get('general', {}).get('verbose_logging', True)
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=marker_layer,
+            config=config,
+            report_lines=self.report_lines,
+            verbose=verbose,
+            auditor=self  # Pass auditor instance for utility functions
+        )
         
-        def log(msg, force=False):
-            """Log message to console and report (only if verbose enabled or force=True)"""
-            if verbose or force:
-                print(msg)
-                if verbose:
-                    self.report_lines.append(msg)
-        
-        log("\n=== GROUND PLANE CHECK START ===", force=True)
-        
-        critical_classes = config.get('critical_net_classes', ['HighSpeed', 'Clock'])
-        gnd_patterns = [p.upper() for p in config.get('ground_net_patterns', ['GND'])]
-        
-        log(f"Looking for net classes: {critical_classes}")
-        log(f"Looking for ground patterns: {gnd_patterns}")
-        
-        check_continuity = config.get('check_continuity_under_trace', True)
-        check_clearance = config.get('check_clearance_around_trace', True)
-        check_mode = config.get('ground_plane_check_layers', 'adjacent')  # 'adjacent' or 'all'
-        check_both = config.get('check_both_sides', True)
-        ignore_via_clearance_mm = config.get('ignore_via_clearance', 0.5)  # mm
-        ignore_pad_clearance_mm = config.get('ignore_pad_clearance', 0.3)  # mm
-        min_area_mm2 = config.get('min_ground_polygon_area_mm2', 10.0)
-        
-        log(f"Check mode: {check_mode}")
-        log(f"Check continuity: {check_continuity}")
-        log(f"Check clearance: {check_clearance}")
-        log(f"Check both sides: {check_both}")
-        log(f"Ignore via clearance: {ignore_via_clearance_mm} mm")
-        log(f"Ignore pad clearance: {ignore_pad_clearance_mm} mm")
-        log(f"Min ground polygon area: {min_area_mm2} mm²")
-        
-        max_gap_under = pcbnew.FromMM(config.get('max_gap_under_trace_mm', 0.5))
-        sampling_interval = pcbnew.FromMM(config.get('sampling_interval_mm', 0.5))
-        clearance_zone = pcbnew.FromMM(config.get('min_clearance_around_trace_mm', 1.0))
-        max_gap_clearance = pcbnew.FromMM(config.get('max_ground_gap_in_clearance_zone_mm', 2.0))
-        via_clearance_radius = pcbnew.FromMM(ignore_via_clearance_mm)  # Read from config
-        pad_clearance_radius = pcbnew.FromMM(ignore_pad_clearance_mm)  # Read from config
-        
-        violation_msg_no_gnd = config.get('violation_message_no_ground', 'NO GND PLANE UNDER TRACE')
-        violation_msg_clearance = config.get('violation_message_insufficient_clearance', 'INSUFFICIENT GND AROUND TRACE')
-        
-        violations = 0
-        
-        # Get all tracks on critical net classes
-        log("\n--- Scanning all tracks ---")
-        critical_tracks = []
-        for track in board.GetTracks():
-            if isinstance(track, pcbnew.PCB_TRACK):
-                net_name = track.GetNetname()
-                net_class = track.GetNetClassName()
-                # Check if any critical class name is in the net class string
-                # (KiCad may return "HighSpeed,Default" for nets in multiple classes)
-                is_critical = any(crit_class in net_class for crit_class in critical_classes)
-                
-                # Debug output for CLK or if already marked critical
-                if is_critical or 'CLK' in net_name.upper():
-                    log(f"Track: net='{net_name}', class='{net_class}'")
-                    if is_critical:
-                        critical_tracks.append(track)
-                        log(f"  ✓ Added to critical check")
-        
-        if not critical_tracks:
-            log(f"\n❌ ERROR: No tracks found in critical net classes!", force=True)
-            log(f"Expected classes: {critical_classes}", force=True)
-            log("HINT: Check your KiCad net classes (Edit → Board Setup → Net Classes)", force=True)
-            return 0
-        
-        # Get all ground plane polygons/zones and organize by layer for performance
-        log("\n--- Scanning all zones ---")
-        ground_zones = []
-        ground_zones_by_layer = {}  # Pre-filter zones by layer for O(1) lookup
-        
-        for zone in board.Zones():
-            zone_net = zone.GetNetname().upper()
-            zone_layer = zone.GetLayer()
-            layer_name = board.GetLayerName(zone_layer)
-            is_filled = zone.IsFilled()
-            log(f"Zone: net='{zone.GetNetname()}', layer={layer_name}, filled={is_filled}")
-            
-            if any(pat in zone_net for pat in gnd_patterns):
-                if not is_filled:
-                    log(f"  ⚠️  WARNING: Ground zone NOT FILLED! Press 'B' to fill zones.")
-                    continue  # Skip unfilled zones (can't hit test them)
-                
-                # Check minimum polygon area (filter out small copper islands)
-                bbox = zone.GetBoundingBox()
-                width_mm = pcbnew.ToMM(bbox.GetWidth())
-                height_mm = pcbnew.ToMM(bbox.GetHeight())
-                zone_area_mm2 = width_mm * height_mm  # Bounding box area in mm²
-                if zone_area_mm2 < min_area_mm2:
-                    log(f"  ⚠️  Ground zone too small ({zone_area_mm2:.1f} mm² < {min_area_mm2:.1f} mm²), skipping")
-                    continue
-                
-                ground_zones.append(zone)
-                
-                # Add to layer-indexed dict for fast lookup
-                if zone_layer not in ground_zones_by_layer:
-                    ground_zones_by_layer[zone_layer] = []
-                ground_zones_by_layer[zone_layer].append(zone)
-                log(f"  ✓ Added as ground zone ({zone_area_mm2:.1f} mm²)")
-        
-        if not ground_zones:
-            log(f"\n❌ ERROR: No ground plane zones found!", force=True)
-            log(f"Looking for patterns: {gnd_patterns}", force=True)
-            log("HINT: Check zone net names contain GND, GROUND, VSS, etc.", force=True)
-            return 0
-        
-        # Apply preferred ground layers if specified
-        preferred_layers = config.get('preferred_ground_layers', [])
-        if preferred_layers:
-            log(f"\nPreferred ground layers: {preferred_layers}")
-            # Sort ground zones by preferred layer priority
-            # Zones on preferred layers will be checked first
-            preferred_layer_names = [name.upper() for name in preferred_layers]
-            for layer_id, zones in ground_zones_by_layer.items():
-                layer_name = board.GetLayerName(layer_id).upper()
-                # Check if this layer matches any preferred pattern
-                is_preferred = any(pref in layer_name for pref in preferred_layer_names)
-                if is_preferred:
-                    log(f"  ✓ Layer {board.GetLayerName(layer_id)} marked as preferred")
-        
-        log(f"\n✓ Found {len(critical_tracks)} critical tracks and {len(ground_zones)} ground zones", force=True)
-        log(f"   Ground zones indexed by {len(ground_zones_by_layer)} layers for fast lookup", force=True)
-        log("="*60)
-        
-        # Create progress dialog for user feedback
-        progress = None
-        if len(critical_tracks) > 10:  # Only show progress for substantial work
-            try:
-                progress = wx.ProgressDialog(
-                    "Ground Plane Check",
-                    "Checking ground plane continuity...",
-                    maximum=len(critical_tracks),
-                    style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
-                )
-            except Exception as e:
-                log(f"  ⚠️  Could not create progress dialog: {e}")
-                progress = None
-        
-        # Check each critical track
-        for track_idx, track in enumerate(critical_tracks):
-            # Update progress dialog
-            if progress:
-                cont, skip = progress.Update(
-                    track_idx, 
-                    f"Checking track {track_idx+1}/{len(critical_tracks)} on net '{track.GetNetname()}'..."
-                )
-                if not cont:  # User clicked Cancel
-                    log("\n⚠️  Ground plane check CANCELLED by user", force=True)
-                    progress.Destroy()
-                    return violations
-            
-            net_name = track.GetNetname()
-            start = track.GetStart()
-            end = track.GetEnd()
-            track_layer = track.GetLayer()
-            track_layer_name = board.GetLayerName(track_layer)
-            
-            log(f"\n>>> Checking track on net '{net_name}', layer {track_layer_name}")
-            log(f"    Start: ({pcbnew.ToMM(start.x):.2f}, {pcbnew.ToMM(start.y):.2f}) mm")
-            log(f"    End: ({pcbnew.ToMM(end.x):.2f}, {pcbnew.ToMM(end.y):.2f}) mm")
-            
-            # Determine which layers to check
-            if check_mode == 'all':
-                # Check all ground zones on all layers
-                layers_to_check = list(set([zone.GetLayer() for zone in ground_zones]))
-                layer_names = [board.GetLayerName(l) for l in layers_to_check]
-                log(f"    Checking ground on ALL layers: {layer_names}")
-            else:
-                # Check only adjacent layer
-                adjacent_layer = self.get_adjacent_ground_layer(board, track_layer)
-                if adjacent_layer is None:
-                    log(f"    ⚠️  No adjacent layer found, skipping")
-                    continue
-                layers_to_check = [adjacent_layer]
-                log(f"    Checking ground on adjacent layer: {board.GetLayerName(adjacent_layer)}")
-            
-            # Sample points along the track
-            track_length = self.get_distance(start, end)
-            if track_length == 0:
-                log(f"    ⚠️  Zero-length track, skipping")
-                continue
-            
-            num_samples = max(2, int(track_length / sampling_interval))
-            log(f"    Track length: {pcbnew.ToMM(track_length):.2f} mm, samples: {num_samples}")
-            
-            # Check continuity under trace
-            if check_continuity:
-                gap_found = False
-                gap_position = None
-                
-                for i in range(num_samples + 1):
-                    t = i / num_samples
-                    sample_x = int(start.x + (end.x - start.x) * t)
-                    sample_y = int(start.y + (end.y - start.y) * t)
-                    sample_pos = pcbnew.VECTOR2I(sample_x, sample_y)
-                    
-                    # Check if ground plane exists at this point on ANY of the layers to check
-                    # Use pre-filtered zones by layer for O(1) lookup instead of O(n) iteration
-                    has_ground_on_any_layer = False
-                    for check_layer in layers_to_check:
-                        # Only check zones on this specific layer (much faster)
-                        for zone in ground_zones_by_layer.get(check_layer, []):
-                            # HitTestFilledArea checks if point is inside filled zone
-                            if zone.HitTestFilledArea(check_layer, sample_pos):
-                                has_ground_on_any_layer = True
-                                break
-                        if has_ground_on_any_layer:
-                            break
-                    
-                    if not has_ground_on_any_layer:
-                        # Check if violation is near a via or pad (should be ignored)
-                        should_ignore = False
-                        
-                        if ignore_via_clearance_mm > 0 or ignore_pad_clearance_mm > 0:
-                            # Check all pads and vias on the board
-                            for footprint in board.GetFootprints():
-                                for pad in footprint.Pads():
-                                    pad_pos = pad.GetPosition()
-                                    dist_to_pad = self.get_distance(sample_pos, pad_pos)
-                                    
-                                    # Ignore if near ground pad
-                                    if ignore_pad_clearance_mm > 0 and dist_to_pad < pad_clearance_radius:
-                                        pad_net = pad.GetNetname().upper()
-                                        if any(gnd in pad_net for gnd in gnd_patterns):
-                                            log(f"    ⚠️  Gap near GND pad, ignoring")
-                                            should_ignore = True
-                                            break
-                                
-                                if should_ignore:
-                                    break
-                            
-                            # Check vias
-                            if not should_ignore and ignore_via_clearance_mm > 0:
-                                for via_track in board.GetTracks():
-                                    if isinstance(via_track, pcbnew.PCB_VIA):
-                                        via_pos = via_track.GetPosition()
-                                        dist_to_via = self.get_distance(sample_pos, via_pos)
-                                        
-                                        if dist_to_via < via_clearance_radius:
-                                            via_net = via_track.GetNetname().upper()
-                                            if any(gnd in via_net for gnd in gnd_patterns):
-                                                log(f"    ⚠️  Gap near GND via, ignoring")
-                                                should_ignore = True
-                                                break
-                        
-                        if not should_ignore:
-                            gap_found = True
-                            gap_position = sample_pos
-                            log(f"    ❌ GAP FOUND at sample {i}/{num_samples}:")
-                            log(f"       Position: ({pcbnew.ToMM(sample_x):.2f}, {pcbnew.ToMM(sample_y):.2f}) mm")
-                        break
-                
-                if gap_found and gap_position:
-                    # Create violation marker
-                    violation_group = pcbnew.PCB_GROUP(board)
-                    violation_group.SetName(f"EMC_GndPlane_{net_name}_{violations+1}")
-                    board.Add(violation_group)
-                    
-                    self.draw_error_marker(board, gap_position, violation_msg_no_gnd, marker_layer, violation_group)
-                    violations += 1
-                    log(f"    ✓ Violation marker created at ({pcbnew.ToMM(gap_position.x):.2f}, {pcbnew.ToMM(gap_position.y):.2f}) mm", force=True)
-                else:
-                    log(f"    ✓ No gaps found - ground plane continuous")
-            
-            # Check clearance around trace
-            if check_clearance:
-                clearance_violation = False
-                clearance_pos = None
-                
-                # Sample perpendicular to track for clearance check
-                for i in range(num_samples + 1):
-                    t = i / num_samples
-                    sample_x = int(start.x + (end.x - start.x) * t)
-                    sample_y = int(start.y + (end.y - start.y) * t)
-                    
-                    # Check points at clearance_zone distance perpendicular to track
-                    dx = end.x - start.x
-                    dy = end.y - start.y
-                    length = math.sqrt(dx*dx + dy*dy)
-                    
-                    if length > 0:
-                        # Perpendicular vector
-                        perp_x = -dy / length * clearance_zone
-                        perp_y = dx / length * clearance_zone
-                        
-                        # Check both sides (or just one if check_both_sides = false)
-                        sides = [1, -1] if check_both else [1]
-                        for side in sides:
-                            check_x = int(sample_x + side * perp_x)
-                            check_y = int(sample_y + side * perp_y)
-                            check_pos = pcbnew.VECTOR2I(check_x, check_y)
-                            
-                            # Check if ground plane exists within clearance zone on any layer
-                            # Use pre-filtered zones by layer for O(1) lookup
-                            has_ground_nearby = False
-                            for check_layer in layers_to_check:
-                                # Only check zones on this specific layer (much faster)
-                                for zone in ground_zones_by_layer.get(check_layer, []):
-                                    if zone.HitTestFilledArea(check_layer, check_pos):
-                                        has_ground_nearby = True
-                                        break
-                                if has_ground_nearby:
-                                    break
-                            
-                            if not has_ground_nearby:
-                                # Check if violation is near a via or pad (should be ignored)
-                                should_ignore = False
-                                
-                                if ignore_via_clearance_mm > 0 or ignore_pad_clearance_mm > 0:
-                                    # Check pads
-                                    for footprint in board.GetFootprints():
-                                        for pad in footprint.Pads():
-                                            pad_pos = pad.GetPosition()
-                                            dist_to_pad = self.get_distance(check_pos, pad_pos)
-                                            
-                                            if ignore_pad_clearance_mm > 0 and dist_to_pad < pad_clearance_radius:
-                                                pad_net = pad.GetNetname().upper()
-                                                if any(gnd in pad_net for gnd in gnd_patterns):
-                                                    should_ignore = True
-                                                    break
-                                        
-                                        if should_ignore:
-                                            break
-                                    
-                                    # Check vias
-                                    if not should_ignore and ignore_via_clearance_mm > 0:
-                                        for via_track in board.GetTracks():
-                                            if isinstance(via_track, pcbnew.PCB_VIA):
-                                                via_pos = via_track.GetPosition()
-                                                dist_to_via = self.get_distance(check_pos, via_pos)
-                                                
-                                                if dist_to_via < via_clearance_radius:
-                                                    via_net = via_track.GetNetname().upper()
-                                                    if any(gnd in via_net for gnd in gnd_patterns):
-                                                        should_ignore = True
-                                                        break
-                                
-                                if not should_ignore:
-                                    clearance_violation = True
-                                    clearance_pos = check_pos
-                                break
-                    
-                    if clearance_violation:
-                        break
-                
-                if clearance_violation and clearance_pos:
-                    # Create violation marker
-                    violation_group = pcbnew.PCB_GROUP(board)
-                    violation_group.SetName(f"EMC_GndPlane_{net_name}_clearance_{violations+1}")
-                    board.Add(violation_group)
-                    
-                    # Draw marker at track position (not at clearance check point)
-                    track_center_x = (start.x + end.x) // 2
-                    track_center_y = (start.y + end.y) // 2
-                    track_center = pcbnew.VECTOR2I(track_center_x, track_center_y)
-                    
-                    self.draw_error_marker(board, track_center, violation_msg_clearance, marker_layer, violation_group)
-                    
-                    # Draw arrow pointing to ground gap
-                    self.draw_arrow(board, track_center, clearance_pos, "GND GAP", marker_layer, violation_group)
-                    violations += 1
-        
-        # Clean up progress dialog
-        if progress:
-            progress.Destroy()
+        # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
+        violations = checker.check(
+            draw_marker_func=self.draw_error_marker,
+            draw_arrow_func=self.draw_arrow,
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
+        )
         
         return violations
-    
-    def get_adjacent_ground_layer(self, board, signal_layer):
-        """Get the adjacent layer that typically contains ground plane"""
-        layer_count = board.GetCopperLayerCount()
-        
-        # For 2-layer boards
-        if layer_count == 2:
-            if signal_layer == pcbnew.F_Cu:
-                return pcbnew.B_Cu
-            elif signal_layer == pcbnew.B_Cu:
-                return pcbnew.F_Cu
-        
-        # For 4-layer boards (typical: F.Cu-GND-PWR-B.Cu)
-        elif layer_count == 4:
-            if signal_layer == pcbnew.F_Cu:
-                return pcbnew.In1_Cu  # Inner layer 1 (typically GND)
-            elif signal_layer == pcbnew.B_Cu:
-                return pcbnew.In2_Cu  # Inner layer 2 (typically PWR or GND)
-        
-        # For 6+ layer boards, assume next inner layer
-        else:
-            if signal_layer == pcbnew.F_Cu:
-                return pcbnew.In1_Cu
-            elif signal_layer == pcbnew.B_Cu:
-                # Last inner layer
-                return board.GetLayerID(f"In{layer_count-2}.Cu")
-        
-        return None
-
     def get_distance(self, p1, p2):
         return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
     
@@ -965,6 +618,74 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
                 matching_nets.append(net_name)
         
         return matching_nets
+
+    def create_logger(self, verbose, report_lines):
+        """
+        Create a logging function for modules to use (eliminates code duplication).
+        
+        This function returns a logger that conditionally prints to console and appends
+        to the shared report_lines list based on the verbose flag. By centralizing this
+        logic, we avoid duplicating the same log() method in all 5 checker modules.
+        
+        Args:
+            verbose: bool - Enable detailed logging to console and report
+            report_lines: list - Shared report lines array (modified in-place)
+        
+        Returns:
+            function: log(msg, force=False) callable
+                - msg: str - Message to log
+                - force: bool - Force logging even if verbose=False (for summary messages)
+        
+        Example:
+            log_func = self.create_logger(True, self.report_lines)
+            log_func("Starting check...", force=True)  # Always logged
+            log_func("Debug: Processing item")  # Only if verbose=True
+        """
+        def log(msg, force=False):
+            """Log message to console and report (only if verbose enabled or force=True)"""
+            if verbose or force:
+                print(msg)
+                if verbose:
+                    report_lines.append(msg)
+        return log
+
+    def create_violation_group(self, board, check_type, identifier, violation_number=None):
+        """
+        Create a standardized violation group for visual organization in KiCad.
+        
+        This function eliminates boilerplate code by providing a single place to create
+        violation groups with consistent naming. Each violation gets a PCB_GROUP that
+        contains all related visual elements (markers, arrows, labels).
+        
+        Args:
+            board: pcbnew.BOARD object
+            check_type: str - Type of check (Via, Decap, GndPlane, EMI, Clearance)
+            identifier: str - Unique identifier (net name, component ref, pad number, etc.)
+            violation_number: int - Optional violation sequence number for uniqueness
+        
+        Returns:
+            pcbnew.PCB_GROUP: Created and added group object ready for use
+        
+        Example:
+            group = self.create_violation_group(board, "Via", "CLK", 3)
+            # Creates group named "EMC_Via_CLK_3"
+            self.draw_error_marker(board, pos, msg, layer, group)
+        
+        Benefits:
+            - Consistent naming convention across all checks
+            - Single place to modify group creation logic
+            - Eliminates 3-line boilerplate repeated 40+ times
+        """
+        group = pcbnew.PCB_GROUP(board)
+        
+        if violation_number is not None:
+            name = f"EMC_{check_type}_{identifier}_{violation_number}"
+        else:
+            name = f"EMC_{check_type}_{identifier}"
+        
+        group.SetName(name)
+        board.Add(group)
+        return group
 
     def draw_error_marker(self, board, pos, message, layer, marker_group):
         """Draw visual marker (circle + text) at violation location"""
@@ -1103,10 +824,13 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
         violations = checker.check(
             draw_marker_func=self.draw_error_marker,
             draw_arrow_func=self.draw_arrow,
-            get_distance_func=self.get_distance
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
         )
         
         return violations
@@ -1143,10 +867,13 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
         violations = checker.check(
             draw_marker_func=self.draw_error_marker,
             draw_arrow_func=self.draw_arrow,
-            get_distance_func=self.get_distance
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
         )
         
         return violations
