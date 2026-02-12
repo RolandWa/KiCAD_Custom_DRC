@@ -1,5 +1,6 @@
 # EMC Auditor Plugin - Sync to KiCad (TEMPLATE)
 # Copy this file to sync_to_kicad.ps1 and customize the $PluginsDir path
+# Version: 1.3.0 (Updated for modular architecture)
 
 $RepoDir = $PSScriptRoot
 
@@ -32,11 +33,15 @@ if (-not (Test-Path $PluginsDir)) {
 }
 
 # Files to synchronize (flat structure, no subfolder)
+# v1.3.0: Added modular checker files
 $FilesToSync = @(
-    "emc_auditor_plugin.py",
-    "clearance_creepage.py",
-    "emc_rules.toml",
-    "emc_icon.png"
+    "emc_auditor_plugin.py",   # Main orchestrator
+    "via_stitching.py",        # Via stitching checker module
+    "decoupling.py",           # Decoupling capacitor checker module
+    "emi_filtering.py",        # EMI filtering checker module
+    "clearance_creepage.py",   # Clearance/creepage checker module
+    "emc_rules.toml",          # Configuration file
+    "emc_icon.png"             # Toolbar icon
 )
 
 $SyncedCount = 0

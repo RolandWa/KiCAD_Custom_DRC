@@ -1,45 +1,61 @@
 ![1770797381000](image/EMC_AUDITOR_SYSTEM_REPORT/1770797381000.png)# EMC Auditor Plugin System - Comprehensive Technical Report
 
-**Generated:** February 11, 2026  
-**System Version:** 1.2.0  
+**Generated:** February 12, 2026  
+**System Version:** 1.3.0  
 **KiCad Version:** 9.0.7+
 
 ---
 
 ## Executive Summary
 
-The **EMC Auditor Plugin** is a KiCad PCB verification tool that automatically checks electromagnetic compatibility (EMC) design rules and visually marks violations on the circuit board. The system consists of three main components:
+The **EMC Auditor Plugin** is a KiCad PCB verification tool that automatically checks electromagnetic compatibility (EMC) design rules and visually marks violations on the circuit board. The system uses a **modular architecture** with dedicated checker modules for better maintainability and extensibility.
 
-1. **Python Plugin** (`emc_auditor_plugin.py`) - 1,235 lines of KiCad Action Plugin code
-2. **TOML Configuration** (`emc_rules.toml`) - 607 lines of externally configurable rules
-3. **PowerShell Sync Script** (`sync_to_kicad.ps1`) - Automated deployment tool
-4. **Documentation Suite** - 8 markdown files with implementation guides and design examples
+### Core Components
 
-The plugin integrates directly into KiCad's PCB Editor toolbar and performs real-time verification of EMC compliance across multiple rule categories.
+1. **Main Orchestrator** (`emc_auditor_plugin.py`) - ~500 lines (reduced from 1172 lines)
+2. **Checker Modules** (4 separate Python files):
+   - `via_stitching.py` - 221 lines
+   - `decoupling.py` - 188 lines
+   - `emi_filtering.py` - 697 lines
+   - `clearance_creepage.py` - 639 lines (stub implementation)
+3. **TOML Configuration** (`emc_rules.toml`) - 654 lines of externally configurable rules
+4. **PowerShell Sync Script** (`sync_to_kicad.ps1`) - Automated deployment tool
+5. **Documentation Suite** - 15+ markdown files with implementation guides and design examples
+
+The plugin integrates directly into KiCad's PCB Editor toolbar and performs real-time verification of EMC compliance across multiple rule categories using dependency injection for utility functions.
 
 ---
 
-## System Architecture
+## System Architecture (v1.3.0 - Modular Refactoring)
 
 ### 1. Core Components
 
-#### A. Main Plugin File: `emc_auditor_plugin.py`
+#### A. Main Orchestrator: `emc_auditor_plugin.py` (~500 lines)
+
+**Responsibilities:**
+- Plugin initialization and KiCad integration
+- Configuration loading (TOML parsing)
+- Utility function provision (draw markers, arrows, distance calculation)
+- Report generation and UI dialogs
+- Checker module orchestration
 
 **Class Structure:**
 ```
 EMCAuditorPlugin (pcbnew.ActionPlugin)
 ├── defaults() - Plugin metadata and initialization
 ├── load_config() - TOML configuration loader
-├── Run() - Main execution entry point
-├── check_via_stitching() - Via return path verification
-├── check_decoupling() - Capacitor proximity checks
-├── check_ground_plane() - Ground plane continuity
-├── check_emi_filtering() - Interface EMI filters
-└── Helper methods:
-    ├── draw_error_marker() - Visual violation markers
-    ├── draw_arrow() - Directional indicators
-    ├── get_distance() - Euclidean distance calculation
-    └── clear_previous_markers() - Cleanup old violations
+├── Run() - Main execution entry point & orchestrator
+├── Utility Functions (injected into modules):
+│   ├── draw_error_marker() - Visual violation markers
+│   ├── draw_arrow() - Directional indicators
+│   ├── get_distance() - Euclidean distance calculation
+│   ├── get_nets_by_class() - Net Class lookup utility
+│   └── clear_previous_markers() - Cleanup old violations
+└── Checker Delegation Methods:
+    ├── check_via_stitching() - Delegates to ViaStitchingChecker
+    ├── check_decoupling() - Delegates to DecouplingChecker
+    ├── check_emi_filtering() - Delegates to EMIFilteringChecker
+    └── check_clearance_creepage() - Delegates to ClearanceCreepageChecker
 ```
 
 **Report Dialog Class:**
@@ -51,24 +67,95 @@ EMCReportDialog (wx.Dialog)
 └── 800×600 resizable window
 ```
 
-#### B. Configuration System: `emc_rules.toml`
+#### B. Checker Modules (Dependency Injection Pattern)
+
+Each checker module follows a standardized pattern:
+
+**1. `via_stitching.py` (221 lines)**
+```
+ViaStitchingChecker
+├── __init__(board, marker_layer, config, report_lines, verbose, auditor)
+├── check(draw_marker_func, draw_arrow_func, get_distance_func)
+│   ├── Receives injected utility functions from main plugin
+│   ├── Uses auditor.get_nets_by_class() for Net Class lookup
+│   └── Returns violation count
+└── log(msg, force) - Shared report logging
+```
+
+**2. `decoupling.py` (188 lines)**
+```
+DecouplingChecker
+├── Verifies IC power pins have nearby decoupling capacitors
+├── Smart net matching (VCC→VCC, 3V3→3V3)
+├── Visual arrows to nearest capacitor
+└── Same dependency injection pattern as ViaStitchingChecker
+```
+
+**3. `emi_filtering.py` (697 lines)**
+```
+EMIFilteringChecker
+├── Verifies EMI filters on connector signal lines
+├── Differential topology detection (common-mode + line filters)
+├── LC/RC/Pi/T filter classification
+├── Series/shunt component analysis
+└── Per-pad violation markers
+```
+
+**4. `clearance_creepage.py` (639 lines stub)**
+```
+ClearanceCreepageChecker
+├── IEC60664-1 / IPC2221 safety compliance
+├── Voltage domain mapping via Net Classes
+├── Clearance (air gap) and creepage (surface path) verification
+└── Stub implementation with comprehensive TODO structure
+```
+
+**Module Integration Pattern:**
+```python
+# Main plugin delegates to module
+from via_stitching import ViaStitchingChecker
+
+def check_via_stitching(self, board, marker_layer, config):
+    # Create checker instance
+    checker = ViaStitchingChecker(
+        board, marker_layer, config, 
+        self.report_lines,  # Shared report
+        verbose=True, 
+        auditor=self  # Provide access to utilities
+    )
+    
+    # Inject utility functions (dependency injection)
+    violations = checker.check(
+        draw_marker_func=self.draw_error_marker,
+        draw_arrow_func=self.draw_arrow,
+        get_distance_func=self.get_distance
+    )
+    
+    return violations
+```
+
+#### C. Configuration System: `emc_rules.toml` (654 lines)
 
 **Configuration Sections:**
 1. `[general]` - Global settings (marker appearance, logging verbosity)
-2. `[via_stitching]` - Ground return via proximity rules
-3. `[decoupling]` - IC power supply decoupling verification
-4. `[ground_plane]` - High-speed signal return path continuity
-5. `[trace_width]` - Current capacity verification (planned)
-6. `[differential_pairs]` - Length matching and impedance (planned)
-7. `[emi_filtering]` - Interface connector filtering requirements
-8. `[clearance_creepage]` - IEC60664-1 / IPC2221 safety compliance (planned)
+2. `[via_stitching]` - Ground return via proximity rules (enabled)
+3. `[decoupling]` - IC power supply decoupling verification (enabled)
+4. `[ground_plane]` - High-speed signal return path continuity (enabled)
+5. `[emi_filtering]` - Interface connector filtering requirements (enabled)
+6. `[trace_width]` - Current capacity verification (config only)
+7. `[differential_pairs]` - Length matching and impedance (config only)
+8. `[clearance_creepage]` - IEC60664-1 / IPC2221 safety compliance (config + stub)
 
-#### C. Deployment Script: `sync_to_kicad.ps1`
+#### D. Deployment Script: `sync_to_kicad.ps1` (Updated v1.3.0)
 
 **Purpose:** Automatically synchronize repository files to KiCad plugins directory
 
 **Files Synchronized:**
-- `emc_auditor_plugin.py` → Plugin code
+- `emc_auditor_plugin.py` → Main orchestrator
+- `via_stitching.py` → Via checker module
+- `decoupling.py` → Decoupling checker module
+- `emi_filtering.py` → EMI checker module
+- `clearance_creepage.py` → Safety checker module
 - `emc_rules.toml` → Configuration
 - `emc_icon.png` → Toolbar icon
 
@@ -88,9 +175,11 @@ EMCReportDialog (wx.Dialog)
 
 ## 2. Verification Rules (Detailed)
 
-### Rule 1: Via Stitching ✅ **IMPLEMENTED**
+### Rule 1: Via Stitching ✅ **IMPLEMENTED** (via_stitching.py)
 
 **Purpose:** Ensure critical signal vias have nearby ground return vias
+
+**Module Location:** `via_stitching.py` (221 lines)
 
 **Algorithm:**
 ```python

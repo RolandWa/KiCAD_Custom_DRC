@@ -1,14 +1,32 @@
 # EMC Auditor Plugin for KiCad
 
-**Version:** 1.2.0  
+**Version:** 1.3.0  
 **KiCad Version:** 9.0.7+  
-**Last Updated:** February 11, 2026
+**Last Updated:** February 12, 2026
 
 ## Overview
 
 The EMC Auditor plugin automatically checks your PCB design for electromagnetic compatibility (EMC) violations and visually marks them on the board. All rules are configurable via the `emc_rules.toml` file.
 
-## What's New in v1.2.0 (February 11, 2026)
+## What's New in v1.3.0 (February 12, 2026)
+
+### 🏗️ Modular Architecture Refactoring
+- **Separated checker modules** - Each DRC check now in dedicated Python file for better maintainability
+- **Dependency injection pattern** - Utility functions (draw markers, arrows, distance) injected from main plugin
+- **Reduced complexity** - Main plugin reduced from 1172 to ~500 lines
+- **New module files**:
+  - `via_stitching.py` - Via stitching checker with Net Class support
+  - `decoupling.py` - Decoupling capacitor proximity checker
+  - `emi_filtering.py` - EMI filtering verification for connectors
+  - `clearance_creepage.py` - Safety compliance checker (stub implementation)
+- **Shared reporting** - All modules write to common report log
+- **Better extensibility** - Easy to add new checkers following established pattern
+
+### 📦 Installation Changes
+- **4 new Python module files required** - Must copy all module files to plugins directory
+- **Updated sync script** - Automatically copies all required files
+
+## Previous Updates - v1.2.0 (February 11, 2026)
 
 ### 🎯 Differential Topology Enhancements
 - **Complete filter chain tracing** - Analyzes entire path from connector through common-mode component to IC
@@ -94,6 +112,51 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
 ## Copilot Development Rules
 
 **FOR AI ASSISTANTS**: When modifying or extending this plugin, follow these rules:
+
+### 0. Modular Architecture Pattern (NEW)
+
+The plugin now uses a **modular architecture**:
+- **Main plugin** (`emc_auditor_plugin.py`) - Orchestrates checks, provides utility functions
+- **Checker modules** - Separate files for each DRC rule (`via_stitching.py`, `decoupling.py`, etc.)
+- **Dependency injection** - Main plugin injects utility functions into checkers
+- **Shared reporting** - All modules append to common `report_lines` list
+
+**When to create a new module:**
+- Complex checks with >100 lines of logic
+- Checks requiring extensive configuration parsing
+- Checks with multiple helper functions
+
+**Module template:**
+```python
+class YourChecker:
+    def __init__(self, board, marker_layer, config, report_lines, verbose=True, auditor=None):
+        self.board = board
+        self.marker_layer = marker_layer
+        self.config = config
+        self.report_lines = report_lines
+        self.verbose = verbose
+        self.auditor = auditor  # Access to main plugin utilities
+        self.draw_marker = None  # Injected
+        self.draw_arrow = None   # Injected
+        self.get_distance = None # Injected
+        self.violation_count = 0
+    
+    def check(self, draw_marker_func, draw_arrow_func, get_distance_func):
+        # Store injected functions
+        self.draw_marker = draw_marker_func
+        self.draw_arrow = draw_arrow_func
+        self.get_distance = get_distance_func
+        # Perform checks...
+        return self.violation_count
+```
+
+**Main plugin integration:**
+```python
+from your_module import YourChecker
+
+checker = YourChecker(board, marker_layer, config, self.report_lines, verbose, self)
+violations = checker.check(self.draw_error_marker, self.draw_arrow, self.get_distance)
+```
 
 ### 1. Violation Marker Pattern (MANDATORY)
 
@@ -267,7 +330,11 @@ Each follows the **same marker pattern** described above.
 
 2. Required files (place directly in plugins directory, NOT in subfolder):
    ```
-   emc_auditor_plugin.py  (main plugin code)
+   emc_auditor_plugin.py  (main plugin orchestrator)
+   via_stitching.py       (via stitching checker module)
+   decoupling.py          (decoupling capacitor checker module)
+   emi_filtering.py       (EMI filtering checker module)
+   clearance_creepage.py  (clearance/creepage checker module)
    emc_rules.toml         (configuration file)
    emc_icon.png           (toolbar icon - KiCad 9.x requires PNG)
    ```
@@ -280,6 +347,8 @@ Each follows the **same marker pattern** described above.
    ```
 
 4. Restart KiCad
+
+**Note**: All module files must be present even if checks are disabled. The plugin handles missing modules gracefully with warning messages.
 
 ## Development & Testing
 
@@ -310,7 +379,11 @@ When modifying the plugin code or configuration, use the sync script to quickly 
 ```
 
 This automatically copies:
-- `emc_auditor_plugin.py` → Plugin code
+- `emc_auditor_plugin.py` → Main plugin orchestrator
+- `via_stitching.py` → Via stitching checker module
+- `decoupling.py` → Decoupling checker module
+- `emi_filtering.py` → EMI filtering checker module
+- `clearance_creepage.py` → Clearance/creepage checker module
 - `emc_rules.toml` → Configuration
 - `emc_icon.png` → Toolbar icon
 
@@ -767,6 +840,30 @@ For issues or feature requests, please open an issue on GitHub.
   - Power budget estimation
 
 ## Version History
+
+### v1.3.0 (2026-02-12)
+- **Modular architecture refactoring** - Separated checkers into dedicated modules
+- Main plugin reduced from 1172 to ~500 lines
+- Added `via_stitching.py`, `decoupling.py`, `emi_filtering.py`, `clearance_creepage.py`
+- Dependency injection pattern for utility functions
+- Shared reporting across all modules
+- Updated installation instructions for new module files
+- Better code maintainability and extensibility
+
+### v1.2.0 (2026-02-11)
+- Differential topology enhancements for EMI filtering
+- Complete filter chain tracing (common-mode + line filters)
+- Compound filter types ("Differential + RC/LC")
+- Fixed series/shunt detection for components
+- Per-pad violation markers
+- Enhanced topology reporting
+
+### v1.1.0 (2026-02-10)
+- Ground plane continuity checker improvements
+- Performance optimization (5-10× faster)
+- Progress dialog for long-running checks
+- Polygon area filtering
+- Via/pad clearance ignore zones
 
 ### v1.0.0 (2026-02-06)
 - Initial release with TOML configuration
