@@ -25,6 +25,27 @@ except ImportError as e:
     print(f"WARNING: Could not import clearance_creepage module: {e}")
     ClearanceCreepageChecker = None
 
+# Import via stitching checking module
+try:
+    from via_stitching import ViaStitchingChecker
+except ImportError as e:
+    print(f"WARNING: Could not import via_stitching module: {e}")
+    ViaStitchingChecker = None
+
+# Import decoupling capacitor checking module
+try:
+    from decoupling import DecouplingChecker
+except ImportError as e:
+    print(f"WARNING: Could not import decoupling module: {e}")
+    DecouplingChecker = None
+
+# Import EMI filtering checking module
+try:
+    from emi_filtering import EMIFilteringChecker
+except ImportError as e:
+    print(f"WARNING: Could not import emi_filtering module: {e}")
+    EMIFilteringChecker = None
+
 class EMCSimpleDialog(wx.Dialog):
     """Simple dialog for quick audit summary with config file access"""
     def __init__(self, parent, message, violations_count, config_path=None):
@@ -424,172 +445,82 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
             dlg.Destroy()
     
     def check_via_stitching(self, board, marker_layer, config):
-        """Check via stitching rules (GND vias near critical signal vias)"""
-        # Check if verbose logging is enabled
+        """Check via stitching rules (GND vias near critical signal vias)
+        
+        This function delegates to the ViaStitchingChecker module for implementation.
+        Complete configuration is in emc_rules.toml [via_stitching] section.
+        
+        The checker reuses utility functions from this plugin:
+        - draw_error_marker(): Draw violation markers on User.Comments layer
+        - draw_arrow(): Draw directional arrows between violation points
+        - get_distance(): Calculate distance between two points
+        
+        Returns:
+            int: Number of violations found
+        """
+        # Check if module is available
+        if ViaStitchingChecker is None:
+            print("⚠️  Via stitching checker module not available")
+            print("HINT: Ensure via_stitching.py is in same directory as plugin")
+            return 0
+        
+        # Create checker instance with shared report lines
         verbose = self.config.get('general', {}).get('verbose_logging', True)
+        checker = ViaStitchingChecker(
+            board=board,
+            marker_layer=marker_layer,
+            config=config,
+            report_lines=self.report_lines,
+            verbose=verbose,
+            auditor=self  # Pass auditor instance for utility functions
+        )
         
-        def log(msg, force=False):
-            """Log message to console and report (only if verbose enabled or force=True)"""
-            if verbose or force:
-                print(msg)
-                if verbose:
-                    self.report_lines.append(msg)
-        
-        log("\n=== VIA STITCHING CHECK START ===", force=True)
-        
-        max_dist = pcbnew.FromMM(config.get('max_distance_mm', 2.0))
-        critical_classes = config.get('critical_net_classes', ['HighSpeed', 'Clock'])
-        gnd_patterns = [p.upper() for p in config.get('ground_net_patterns', ['GND'])]
-        violation_msg = config.get('violation_message', 'NO GND VIA')
-        
-        log(f"Max distance: {config.get('max_distance_mm', 2.0)} mm")
-        log(f"Critical net classes: {critical_classes}")
-        log(f"Ground patterns: {gnd_patterns}")
-        
-        tracks = board.GetTracks()
-        vias = [t for t in tracks if isinstance(t, pcbnew.PCB_VIA)]
-        
-        # Filter critical vias (handle comma-separated class names)
-        critical_vias = []
-        for v in vias:
-            net_class = v.GetNetClassName()
-            is_critical = any(crit_class in net_class for crit_class in critical_classes)
-            if is_critical:
-                critical_vias.append(v)
-                log(f"Critical via: net='{v.GetNetname()}', class='{net_class}'")
-        
-        gnd_vias = [v for v in vias if any(pat in v.GetNetname().upper() for pat in gnd_patterns)]
-        
-        log(f"\n✓ Found {len(critical_vias)} critical vias and {len(gnd_vias)} ground vias", force=True)
-        
-        violations = 0
-        for cv in critical_vias:
-            net_name = cv.GetNetname()
-            pos = cv.GetPosition()
-            log(f"\n>>> Checking via on net '{net_name}' at ({pcbnew.ToMM(pos.x):.2f}, {pcbnew.ToMM(pos.y):.2f}) mm")
-            
-            found = False
-            nearest_dist = float('inf')
-            for gv in gnd_vias:
-                dist = self.get_distance(cv.GetPosition(), gv.GetPosition())
-                if dist < nearest_dist:
-                    nearest_dist = dist
-                if dist <= max_dist:
-                    found = True
-                    log(f"    ✓ GND via found at {pcbnew.ToMM(dist):.2f} mm")
-                    break
-            
-            if not found:
-                log(f"    ❌ NO GND VIA within {config.get('max_distance_mm', 2.0)} mm (nearest: {pcbnew.ToMM(nearest_dist):.2f} mm)")
-                # Create individual group for this violation
-                violation_group = pcbnew.PCB_GROUP(board)
-                violation_group.SetName(f"EMC_Via_{violations+1}")
-                board.Add(violation_group)
-                
-                self.draw_error_marker(board, cv.GetPosition(), violation_msg, marker_layer, violation_group)
-                violations += 1
-                log(f"    ✓ Violation marker created at ({pcbnew.ToMM(pos.x):.2f}, {pcbnew.ToMM(pos.y):.2f}) mm", force=True)
+        # Run check with injected utility functions (avoids code duplication)
+        violations = checker.check(
+            draw_marker_func=self.draw_error_marker,
+            draw_arrow_func=self.draw_arrow,
+            get_distance_func=self.get_distance
+        )
         
         return violations
     
     def check_decoupling(self, board, marker_layer, config):
-        """Check decoupling capacitor proximity to IC power pins"""
-        # Check if verbose logging is enabled
+        """Check decoupling capacitor proximity to IC power pins
+        
+        This function delegates to the DecouplingChecker module for implementation.
+        Complete configuration is in emc_rules.toml [decoupling] section.
+        
+        The checker reuses utility functions from this plugin:
+        - draw_error_marker(): Draw violation markers on User.Comments layer
+        - draw_arrow(): Draw directional arrows between violation points
+        - get_distance(): Calculate distance between two points
+        
+        Returns:
+            int: Number of violations found
+        """
+        # Check if module is available
+        if DecouplingChecker is None:
+            print("⚠️  Decoupling checker module not available")
+            print("HINT: Ensure decoupling.py is in same directory as plugin")
+            return 0
+        
+        # Create checker instance with shared report lines
         verbose = self.config.get('general', {}).get('verbose_logging', True)
+        checker = DecouplingChecker(
+            board=board,
+            marker_layer=marker_layer,
+            config=config,
+            report_lines=self.report_lines,
+            verbose=verbose,
+            auditor=self  # Pass auditor instance for utility functions
+        )
         
-        def log(msg, force=False):
-            """Log message to console and report (only if verbose enabled or force=True)"""
-            if verbose or force:
-                print(msg)
-                if verbose:
-                    self.report_lines.append(msg)
-        
-        log("\n=== DECOUPLING CAPACITOR CHECK START ===", force=True)
-        
-        max_dist_mm = config.get('max_distance_mm', 3.0)
-        max_dist = pcbnew.FromMM(max_dist_mm)
-        ic_prefixes = config.get('ic_reference_prefixes', ['U'])
-        cap_prefixes = config.get('capacitor_reference_prefixes', ['C'])
-        power_patterns = [p.upper() for p in config.get('power_net_patterns', ['VCC', 'VDD'])]
-        violation_msg_template = config.get('violation_message', 'CAP TOO FAR ({distance:.1f}mm)')
-        draw_arrow = config.get('draw_arrow_to_nearest_cap', True)
-        
-        log(f"Max distance: {max_dist_mm} mm")
-        log(f"IC prefixes: {ic_prefixes}")
-        log(f"Capacitor prefixes: {cap_prefixes}")
-        log(f"Power net patterns: {power_patterns}")
-        show_label = config.get('show_capacitor_label', True)
-        
-        violations = 0
-        for footprint in board.GetFootprints():
-            ref = footprint.GetReference()
-            if any(ref.startswith(prefix) for prefix in ic_prefixes):
-                log(f"\n>>> Found IC: {ref}")
-                for pad in footprint.Pads():
-                    net_name = pad.GetNetname().upper()
-                    power_net = pad.GetNetname()  # Get actual net name for matching
-                    if any(pat in net_name for pat in power_patterns):
-                        pad_pos = pad.GetPosition()
-                        pad_x_mm = pcbnew.ToMM(pad_pos.x)
-                        pad_y_mm = pcbnew.ToMM(pad_pos.y)
-                        log(f"    Checking power pad '{power_net}' at ({pad_x_mm:.2f}, {pad_y_mm:.2f}) mm")
-                        best_dist = float('inf')
-                        nearest_cap_pos = None
-                        nearest_cap_ref = None
-                        
-                        # Find nearest capacitor CONNECTED TO THE SAME POWER NET
-                        for cap in board.GetFootprints():
-                            cap_ref = cap.GetReference()
-                            if any(cap_ref.startswith(prefix) for prefix in cap_prefixes):
-                                # Check if capacitor is connected to this power net
-                                cap_connected = False
-                                for cap_pad in cap.Pads():
-                                    if cap_pad.GetNetname() == power_net:
-                                        cap_connected = True
-                                        break
-                                
-                                # Only consider capacitors on the same power net
-                                if cap_connected:
-                                    d = self.get_distance(pad.GetPosition(), cap.GetPosition())
-                                    if d < best_dist:
-                                        best_dist = d
-                                        nearest_cap_pos = cap.GetPosition()
-                                        nearest_cap_ref = cap_ref
-                        
-                        # Log result of capacitor search
-                        dist_mm = pcbnew.ToMM(best_dist) if best_dist != float('inf') else float('inf')
-                        if best_dist <= max_dist:
-                            log(f"        ✓ Nearest capacitor ({nearest_cap_ref}): {dist_mm:.2f} mm - OK")
-                        else:
-                            log(f"        ❌ Nearest capacitor ({nearest_cap_ref if nearest_cap_ref else 'NONE'}): {dist_mm:.2f} mm - EXCEEDS {max_dist_mm} mm limit")
-                        
-                        # If violation found, create individual group and draw markers
-                        if best_dist > max_dist:
-                            # Create individual group for this violation (circle + text + arrow)
-                            violation_group = pcbnew.PCB_GROUP(board)
-                            violation_group.SetName(f"EMC_Decap_{ref}_{power_net}")
-                            board.Add(violation_group)
-                            
-                            dist_mm = pcbnew.ToMM(best_dist)
-                            msg = violation_msg_template.format(distance=dist_mm)
-                            self.draw_error_marker(board, pad.GetPosition(), msg, marker_layer, violation_group)
-                            pad_x_mm = pcbnew.ToMM(pad.GetPosition().x)
-                            pad_y_mm = pcbnew.ToMM(pad.GetPosition().y)
-                            log(f"        ✓ Violation marker created at ({pad_x_mm:.2f}, {pad_y_mm:.2f}) mm", force=True)
-                            
-                            # Draw arrow showing where the nearest capacitor is
-                            if draw_arrow and nearest_cap_pos:
-                                label = f"→ {nearest_cap_ref}" if show_label else ""
-                                self.draw_arrow(
-                                    board, 
-                                    pad.GetPosition(), 
-                                    nearest_cap_pos,
-                                    label,
-                                    marker_layer,
-                                    violation_group
-                                )
-                            
-                            violations += 1
+        # Run check with injected utility functions (avoids code duplication)
+        violations = checker.check(
+            draw_marker_func=self.draw_error_marker,
+            draw_arrow_func=self.draw_arrow,
+            get_distance_func=self.get_distance
+        )
         
         return violations
 
@@ -1141,122 +1072,43 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
             marker_group.AddItem(txt)
 
     def check_emi_filtering(self, board, marker_layer, config):
-        """Check EMI filtering on interface connectors (USB, Ethernet, CAN, etc.)"""
-        verbose = self.config.get('general', {}).get('verbose_logging', True)
+        """Check EMI filtering on interface connectors (USB, Ethernet, CAN, etc.)
         
-        def log(msg, force=False):
-            """Log message to console and report"""
-            if verbose or force:
-                print(msg)
-                if verbose:
-                    self.report_lines.append(msg)
+        This function delegates to the EMIFilteringChecker module for implementation.
+        Complete configuration is in emc_rules.toml [emi_filtering] section.
         
-        log("\n=== EMI FILTERING CHECK START ===", force=True)
+        The checker reuses utility functions from this plugin:
+        - draw_error_marker(): Draw violation markers on User.Comments layer
+        - draw_arrow(): Draw directional arrows between violation points
+        - get_distance(): Calculate distance between two points
         
-        # Load configuration
-        connector_prefix = config.get('connector_prefix', 'J')
-        filter_prefixes = config.get('filter_component_prefixes', ['R', 'L', 'FB', 'C', 'D'])
-        max_distance_mm = config.get('max_filter_distance_mm', 10.0)
-        min_filter_type = config.get('min_filter_type', 'simple')  # 'simple', 'LC', 'RC', 'T', 'Pi'
-        violation_msg = config.get('violation_message', 'MISSING EMI FILTER')
-        
-        max_distance = pcbnew.FromMM(max_distance_mm)
-        
-        log(f"Connector prefix: '{connector_prefix}'")
-        log(f"Filter component prefixes: {filter_prefixes}")
-        log(f"Maximum filter distance: {max_distance_mm} mm")
-        log(f"Minimum required filter type: {min_filter_type}")
-        
-        violations = 0
-        
-        # Step 1: Find all connectors with specified prefix
-        log("\n--- Scanning for connectors ---")
-        connectors = self._find_connectors(board, connector_prefix)
-        log(f"Found {len(connectors)} connector(s) with prefix '{connector_prefix}'")
-        
-        if not connectors:
-            log("No connectors found - check complete", force=True)
+        Returns:
+            int: Number of violations found
+        """
+        # Check if module is available
+        if EMIFilteringChecker is None:
+            print("⚠️  EMI filtering checker module not available")
+            print("HINT: Ensure emi_filtering.py is in same directory as plugin")
             return 0
         
-        # Step 2: For each connector, detect interface type and check for EMI filtering
-        for conn_ref, conn_fp in connectors:
-            log(f"\n--- Checking connector {conn_ref} ---")
-            conn_pos = conn_fp.GetPosition()
-            
-            # Detect interface type from reference or footprint name
-            interface_type = self._detect_interface_type(conn_ref, conn_fp)
-            log(f"Interface type: {interface_type}")
-            
-            # Get all signal pads from connector (exclude GND, VCC, etc.)
-            signal_pads = self._get_signal_pads(conn_fp)
-            log(f"Found {len(signal_pads)} signal pad(s)")
-            
-            if not signal_pads:
-                log("  ⚠️  No signal pads found (all GND/VCC?) - skipping")
-                continue
-            
-            # Step 3: Check EMI filter on each signal line and track per-pad results
-            pad_results = []  # Track (pad, filter_type, distance, topology, sufficient)
-            
-            for pad in signal_pads:
-                net = pad.GetNet()
-                if not net:
-                    continue
-                
-                net_name = net.GetNetname()
-                pad_num = pad.GetNumber()
-                log(f"  Checking net '{net_name}' on pad {pad_num}")
-                
-                # Find filter components on this net (improved algorithm)
-                filter_result = self._classify_filter_topology_improved(
-                    board, net, conn_pos, max_distance, filter_prefixes, config
-                )
-                
-                if filter_result:
-                    filter_type, distance, topology_description = filter_result
-                    log(f"    Found filter: {filter_type}")
-                    log(f"    Topology: {topology_description}")
-                    log(f"    Distance to first component: {pcbnew.ToMM(distance):.2f} mm")
-                    
-                    # Check if this filter meets requirement
-                    filter_sufficient = self._check_filter_requirement(filter_type, min_filter_type)
-                    pad_results.append((pad, filter_type, distance, topology_description, filter_sufficient))
-                    
-                    if filter_sufficient:
-                        log(f"    ✓ Filter OK: {filter_type} at {pcbnew.ToMM(distance):.2f} mm")
-                    else:
-                        log(f"    ❌ VIOLATION: Filter type '{filter_type}' insufficient (need '{min_filter_type}')", force=True)
-                else:
-                    log(f"    ❌ VIOLATION: No EMI filter found within {max_distance_mm} mm", force=True)
-                    pad_results.append((pad, None, float('inf'), None, False))
-            
-            # Step 4: Create markers for each pad with violations
-            for pad, filter_type, distance, topology, sufficient in pad_results:
-                if not sufficient:
-                    pad_pos = pad.GetPosition()
-                    pad_num = pad.GetNumber()
-                    net_name = pad.GetNet().GetNetname() if pad.GetNet() else "NC"
-                    
-                    if filter_type is None:
-                        # No filter found
-                        violation_group = pcbnew.PCB_GROUP(board)
-                        violation_group.SetName(f"EMC_EMI_{conn_ref}_Pad{pad_num}_NoFilter")
-                        board.Add(violation_group)
-                        
-                        marker_text = f"{violation_msg}\n({interface_type})"
-                        self.draw_error_marker(board, pad_pos, marker_text, marker_layer, violation_group)
-                        violations += 1
-                    else:
-                        # Insufficient filter
-                        violation_group = pcbnew.PCB_GROUP(board)
-                        violation_group.SetName(f"EMC_EMI_{conn_ref}_Pad{pad_num}_WeakFilter")
-                        board.Add(violation_group)
-                        
-                        marker_text = f"WEAK FILTER\n({filter_type}<{min_filter_type})"
-                        self.draw_error_marker(board, pad_pos, marker_text, marker_layer, violation_group)
-                        violations += 1
+        # Create checker instance with shared report lines
+        verbose = self.config.get('general', {}).get('verbose_logging', True)
+        checker = EMIFilteringChecker(
+            board=board,
+            marker_layer=marker_layer,
+            config=config,
+            report_lines=self.report_lines,
+            verbose=verbose,
+            auditor=self  # Pass auditor instance for utility functions
+        )
         
-        log(f"\n=== EMI FILTERING CHECK COMPLETE: {violations} violation(s) ===", force=True)
+        # Run check with injected utility functions (avoids code duplication)
+        violations = checker.check(
+            draw_marker_func=self.draw_error_marker,
+            draw_arrow_func=self.draw_arrow,
+            get_distance_func=self.get_distance
+        )
+        
         return violations
     
     def check_clearance_creepage(self, board, marker_layer, config):
@@ -1275,8 +1127,8 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         """
         # Check if module is available
         if ClearanceCreepageChecker is None:
-            self.log("⚠️  Clearance/Creepage checker module not available", force=True)
-            self.log("HINT: Ensure clearance_creepage.py is in same directory as plugin", force=True)
+            print("⚠️  Clearance/Creepage checker module not available")
+            print("HINT: Ensure clearance_creepage.py is in same directory as plugin")
             return 0
         
         # Create checker instance with shared report lines
@@ -1298,715 +1150,7 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         return violations
-    
-    def _find_connectors(self, board, prefix):
-        """Find all footprints with reference starting with specified prefix (e.g., 'J')"""
-        connectors = []
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            if ref.startswith(prefix):
-                connectors.append((ref, fp))
-        return connectors
-    
-    def _detect_interface_type(self, ref, footprint):
-        """Detect interface type from reference or footprint name"""
-        ref_upper = ref.upper()
-        
-        # Get footprint name - convert UTF8 to string
-        try:
-            fp_name = str(footprint.GetFPID().GetLibItemName()).upper()
-        except:
-            fp_name = ""
-        
-        # Check common interface patterns
-        if 'USB' in ref_upper or 'USB' in fp_name:
-            return 'USB'
-        elif 'ETH' in ref_upper or 'RJ45' in fp_name or 'ETHERNET' in fp_name:
-            return 'Ethernet'
-        elif 'HDMI' in ref_upper or 'HDMI' in fp_name:
-            return 'HDMI'
-        elif 'CAN' in ref_upper:
-            return 'CAN'
-        elif 'RS485' in ref_upper or 'RS-485' in ref_upper:
-            return 'RS485'
-        elif 'RS232' in ref_upper or 'RS-232' in ref_upper:
-            return 'RS232'
-        else:
-            return 'Unknown'
-    
-    def _get_signal_pads(self, footprint):
-        """Get signal pads from connector (exclude GND, VCC, shield, etc.)
-        
-        Excludes power and ground nets from EMI filtering checks since they're
-        not interface signals and have separate decoupling requirements.
-        """
-        signal_pads = []
-        
-        # Ground net patterns (same as via stitching check)
-        ground_patterns = ['GND', 'GROUND', 'VSS', 'PGND', 'AGND', 'DGND', 'SHIELD', 'SH']
-        
-        # Power net patterns (same as decoupling check)
-        # These are supply rails, not interface signals
-        power_patterns = ['VCC', 'VDD', 'PWR', '3V3', '5V', '1V8', '2V5', '12V', '+3V3', '+5V', '+', 'VBUS']
-        
-        for pad in footprint.Pads():
-            net = pad.GetNet()
-            if not net:
-                continue
-            
-            net_name = net.GetNetname().upper()
-            
-            # Exclude ground nets
-            is_ground = any(pattern in net_name for pattern in ground_patterns)
-            if is_ground:
-                continue
-            
-            # Exclude power supply nets (NOT interface signals)
-            is_power = any(pattern in net_name for pattern in power_patterns)
-            if is_power:
-                continue
-            
-            # This is a signal pad (data, clock, control lines)
-            signal_pads.append(pad)
-        
-        return signal_pads
-    
-    def _find_filter_components(self, board, net, connector_pos, max_distance, prefixes):
-        """Find filter components (R, L, FB, C, D) on specified net within max_distance"""
-        filter_components = []
-        
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            
-            # Check if component has filter prefix (R, L, FB, C, D)
-            if not any(ref.startswith(prefix) for prefix in prefixes):
-                continue
-            
-            # Check if component is connected to the net
-            component_on_net = False
-            for pad in fp.Pads():
-                if pad.GetNet() and pad.GetNet().GetNetCode() == net.GetNetCode():
-                    component_on_net = True
-                    break
-            
-            if not component_on_net:
-                continue
-            
-            # Check distance from connector
-            comp_pos = fp.GetPosition()
-            distance = math.sqrt(
-                (comp_pos.x - connector_pos.x)**2 + 
-                (comp_pos.y - connector_pos.y)**2
-            )
-            
-            if distance <= max_distance:
-                filter_components.append((ref, fp, distance))
-        
-        return filter_components
-    
-    def _classify_filter_topology_improved(self, board, net, connector_pos, max_distance, prefixes, config):
-        """Improved filter topology detection with series/shunt analysis and differential pair detection.
-        
-        Algorithm:
-        1. Find first filter component within max_filter_distance_mm of connector
-        2. Trace signal path from connector through filter components
-        3. Classify each component as series (in-line) or shunt (to GND/power)
-        4. Build topology description with component references
-        5. Detect differential pair filters (common-mode chokes)
-        
-        Returns: (filter_type, distance, topology_description) or None
-        """
-        
-        # Step 1: Find first component within max_distance
-        first_component = self._find_first_filter_component(
-            board, net, connector_pos, max_distance, prefixes
-        )
-        
-        if not first_component:
-            return None  # No filter within range
-        
-        first_ref, first_fp, first_distance = first_component
-        
-        # Step 2: Find all filter components on this net (no distance limit after first)
-        all_filter_components = []
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            
-            # Check if component has filter prefix
-            if not any(ref.startswith(prefix) for prefix in prefixes):
-                continue
-            
-            # Check if component is connected to the net
-            component_on_net = False
-            for pad in fp.Pads():
-                if pad.GetNet() and pad.GetNet().GetNetCode() == net.GetNetCode():
-                    component_on_net = True
-                    break
-            
-            if component_on_net:
-                comp_pos = fp.GetPosition()
-                distance = math.sqrt(
-                    (comp_pos.x - connector_pos.x)**2 + 
-                    (comp_pos.y - connector_pos.y)**2
-                )
-                all_filter_components.append((ref, fp, distance))
-        
-        if not all_filter_components:
-            return None
-        
-        # Step 3: Analyze each component (series vs shunt)
-        component_analysis = []
-        series_components = []
-        shunt_components = []
-        
-        for ref, fp, distance in all_filter_components:
-            comp_type, net_info = self._analyze_component_placement(board, fp, net, config)
-            component_analysis.append({
-                'ref': ref,
-                'type': comp_type,  # 'series' or 'shunt'
-                'component_class': ref[0] if ref else '?',  # R, L, C, FB, D
-                'distance': distance,
-                'nets': net_info
-            })
-            
-            if comp_type == 'series':
-                series_components.append(ref)
-            elif comp_type == 'shunt':
-                shunt_components.append(ref)
-        
-        # Sort by distance from connector
-        component_analysis.sort(key=lambda x: x['distance'])
-        
-        # Step 4: Detect differential pair filters
-        diff_pair_filter = self._detect_differential_pair_filter(board, net, connector_pos, max_distance, config)
-        
-        # Step 5: Classify topology
-        filter_type, topology_desc = self._classify_topology_from_analysis(
-            component_analysis, series_components, shunt_components, diff_pair_filter, config
-        )
-        
-        return (filter_type, first_distance, topology_desc)
-    
-    def _find_first_filter_component(self, board, net, connector_pos, max_distance, prefixes):
-        """Find the first filter component within max_distance of connector."""
-        nearest_component = None
-        nearest_distance = float('inf')
-        
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            
-            # Check if component has filter prefix
-            if not any(ref.startswith(prefix) for prefix in prefixes):
-                continue
-            
-            # Check if component is connected to the net
-            component_on_net = False
-            for pad in fp.Pads():
-                if pad.GetNet() and pad.GetNet().GetNetCode() == net.GetNetCode():
-                    component_on_net = True
-                    break
-            
-            if not component_on_net:
-                continue
-            
-            # Check distance from connector
-            comp_pos = fp.GetPosition()
-            distance = math.sqrt(
-                (comp_pos.x - connector_pos.x)**2 + 
-                (comp_pos.y - connector_pos.y)**2
-            )
-            
-            if distance <= max_distance and distance < nearest_distance:
-                nearest_component = (ref, fp, distance)
-                nearest_distance = distance
-        
-        return nearest_component
-    
-    def _analyze_component_placement(self, board, footprint, signal_net, config):
-        """Determine if component is series (in-line) or shunt (to GND/power).
-        
-        Series: Component in signal path (at least one pad on signal, no pads on GND/power)
-        Shunt: One pad on signal net, other pad on GND or power net (bypass cap, termination)
-        
-        Returns: ('series' or 'shunt', net_info_dict)
-        """
-        pads = list(footprint.Pads())
-        
-        if len(pads) < 2:
-            return ('unknown', {})
-        
-        # Get nets for all pads
-        pad_nets = []
-        for pad in pads:
-            net = pad.GetNet()
-            if net:
-                pad_nets.append(net.GetNetname())
-            else:
-                pad_nets.append('NC')
-        
-        # Get GND/power patterns from config
-        ground_patterns = config.get('ground_patterns', ['GND', 'GROUND', 'VSS', 'AGND', 'DGND', 'PGND'])
-        power_patterns = config.get('power_patterns', ['VCC', 'VDD', 'PWR', '+', 'VBUS', '3V3', '5V'])
-        gnd_power_patterns = ground_patterns + power_patterns
-        
-        signal_net_name = signal_net.GetNetname()
-        signal_net_count = pad_nets.count(signal_net_name)
-        
-        # Check for GND/power connections (on any pad)
-        has_gnd_power = any(
-            any(pattern in net_name.upper() for pattern in gnd_power_patterns)
-            for net_name in pad_nets if net_name != 'NC'
-        )
-        
-        # Classification logic:
-        # Shunt: One pad on signal, any other pad on GND/power
-        if signal_net_count >= 1 and has_gnd_power:
-            return ('shunt', {'type': 'shunt', 'nets': pad_nets})
-        # Series: At least one pad on signal, no GND/power connections (in-line component)
-        elif signal_net_count >= 1 and not has_gnd_power:
-            return ('series', {'type': 'series', 'nets': pad_nets})
-        else:
-            # No connection to signal net being analyzed
-            return ('unknown', {'type': 'unknown', 'nets': pad_nets})
-    
-    def _detect_differential_pair_filter(self, board, net, connector_pos, max_distance, config):
-        """Detect common-mode choke or differential pair filter.
-        
-        Looks for inductors/ferrite beads with nets matching differential pair patterns
-        configured in TOML (e.g., _P/_N, +/-, DP/DM, TXP/TXN, CANH/CANL).
-        """
-        net_name = net.GetNetname()
-        
-        # Get differential pair patterns from config
-        diff_config = config.get('differential_pairs', {})
-        diff_patterns = diff_config.get('patterns', [
-            ['_P', '_N'], ['_p', '_n'], ['+', '-'],
-            ['DP', 'DM'], ['dp', 'dm'],
-            ['TXP', 'TXN'], ['txp', 'txn'],
-            ['RXP', 'RXN'], ['rxp', 'rxn']
-        ])
-        # Convert to tuples for compatibility
-        diff_patterns = [tuple(pair) for pair in diff_patterns]
-        
-        # Check if current net is part of a differential pair
-        pair_net = None
-        for pos_suffix, neg_suffix in diff_patterns:
-            if pos_suffix in net_name:
-                pair_net_name = net_name.replace(pos_suffix, neg_suffix)
-                pair_net = board.FindNet(pair_net_name)
-                if pair_net:
-                    break
-            elif neg_suffix in net_name:
-                pair_net_name = net_name.replace(neg_suffix, pos_suffix)
-                pair_net = board.FindNet(pair_net_name)
-                if pair_net:
-                    break
-        
-        if not pair_net:
-            return None
-        
-        # Get minimum pin count for common-mode choke from config
-        min_pins = diff_config.get('min_common_mode_choke_pins', 4)
-        
-        # Get inductor prefixes from component classes config
-        component_classes = config.get('component_classes', {})
-        inductor_prefixes = component_classes.get('inductor_prefixes', ['L', 'FB'])
-        capacitor_prefixes = component_classes.get('capacitor_prefixes', ['C'])
-        
-        # Look for common-mode choke (inductor/FB with min_pins+ connected to both nets)
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            
-            # Check for inductor or ferrite bead using config prefixes
-            if not any(ref.startswith(prefix) for prefix in inductor_prefixes):
-                continue
-            
-            # Check if it has enough pads (common-mode choke characteristic)
-            pads = list(fp.Pads())
-            if len(pads) < min_pins:
-                continue
-            
-            # Check distance from connector
-            comp_pos = fp.GetPosition()
-            distance = math.sqrt(
-                (comp_pos.x - connector_pos.x)**2 + 
-                (comp_pos.y - connector_pos.y)**2
-            )
-            
-            if distance > max_distance:
-                continue
-            
-            # Check if both differential pair nets are connected
-            nets_on_component = set()
-            for pad in pads:
-                pad_net = pad.GetNet()
-                if pad_net:
-                    nets_on_component.add(pad_net.GetNetCode())
-            
-            if net.GetNetCode() in nets_on_component and pair_net.GetNetCode() in nets_on_component:
-                return {
-                    'ref': ref,
-                    'type': 'common_mode_choke',
-                    'net1': net_name,
-                    'net2': pair_net.GetNetname(),
-                    'distance': distance
-                }
-        
-        # Look for common-mode capacitor (capacitor with pads on both differential nets)
-        for fp in board.GetFootprints():
-            ref = fp.GetReference()
-            
-            # Check for capacitor using config prefixes
-            if not any(ref.startswith(prefix) for prefix in capacitor_prefixes):
-                continue
-            
-            # Check if it has exactly 2 pads (standard capacitor)
-            pads = list(fp.Pads())
-            if len(pads) != 2:
-                continue
-            
-            # Check distance from connector
-            comp_pos = fp.GetPosition()
-            distance = math.sqrt(
-                (comp_pos.x - connector_pos.x)**2 + 
-                (comp_pos.y - connector_pos.y)**2
-            )
-            
-            if distance > max_distance:
-                continue
-            
-            # Check if one pad is on net1 and other pad is on net2
-            pad_nets = []
-            for pad in pads:
-                pad_net = pad.GetNet()
-                if pad_net:
-                    pad_nets.append(pad_net.GetNetCode())
-            
-            if len(pad_nets) == 2:
-                if ((net.GetNetCode() in pad_nets and pair_net.GetNetCode() in pad_nets) and
-                    (pad_nets[0] != pad_nets[1])):
-                    return {
-                        'ref': ref,
-                        'type': 'common_mode_capacitor',
-                        'net1': net_name,
-                        'net2': pair_net.GetNetname(),
-                        'distance': distance
-                    }
-        
-        return None
-    
-    def _classify_line_filter_type(self, line_components, inductor_prefixes, capacitor_prefixes, resistor_prefixes):
-        """Classify filter type for individual differential line components.
-        
-        Args:
-            line_components: List of component dicts (excluding common-mode component)
-            inductor_prefixes, capacitor_prefixes, resistor_prefixes: Config-based component class prefixes
-            
-        Returns: Filter type string ('LC', 'RC', 'C', 'R', simple')
-        """
-        if not line_components:
-            return 'simple'
-        
-        # Check component types
-        has_series_L = any(
-            any(comp['ref'].startswith(prefix) for prefix in inductor_prefixes)
-            for comp in line_components if comp['type'] == 'series'
-        )
-        has_series_R = any(
-            any(comp['ref'].startswith(prefix) for prefix in resistor_prefixes)
-            for comp in line_components if comp['type'] == 'series'
-        )
-        has_shunt_C = any(
-            any(comp['ref'].startswith(prefix) for prefix in capacitor_prefixes)
-            for comp in line_components if comp['type'] == 'shunt'
-        )
-        
-        # Count components for Pi/T detection
-        series_count = sum(1 for comp in line_components if comp['type'] == 'series')
-        shunt_count = sum(1 for comp in line_components if comp['type'] == 'shunt')
-        
-        # Pi filter: Shunt-C → Series-L/R → Shunt-C
-        if shunt_count >= 2 and series_count >= 1 and (has_series_L or has_series_R):
-            if (len(line_components) >= 3 and 
-                line_components[0]['type'] == 'shunt' and 
-                line_components[1]['type'] == 'series' and 
-                line_components[2]['type'] == 'shunt'):
-                return 'Pi' if has_series_L else 'RC'
-        
-        # T filter: Series-L/R → Shunt-C → Series-L/R
-        if series_count >= 2 and shunt_count >= 1 and has_shunt_C:
-            if (len(line_components) >= 3 and 
-                line_components[0]['type'] == 'series' and 
-                line_components[1]['type'] == 'shunt' and 
-                line_components[2]['type'] == 'series'):
-                return 'T' if has_series_L else 'RC'
-        
-        # LC filter: Series L + Shunt C
-        if has_series_L and has_shunt_C:
-            return 'LC'
-        
-        # RC filter: Series R + Shunt C
-        if has_series_R and has_shunt_C:
-            return 'RC'
-        
-        # Single component filters
-        if has_series_L:
-            return 'L'
-        if has_shunt_C:
-            return 'C'
-        if has_series_R:
-            return 'R'
-        
-        return 'simple'
-    
-    def _classify_topology_from_analysis(self, component_analysis, series_components, shunt_components, diff_pair_filter, config):
-        """Classify filter topology from component analysis.
-        
-        Returns: (filter_type, detailed_description)
-        """
-        
-        # Get component class mapping from config
-        component_classes = config.get('component_classes', {})
-        inductor_prefixes = component_classes.get('inductor_prefixes', ['L', 'FB'])
-        capacitor_prefixes = component_classes.get('capacitor_prefixes', ['C'])
-        resistor_prefixes = component_classes.get('resistor_prefixes', ['R'])
-        
-        # If differential pair filter detected, analyze complete topology
-        if diff_pair_filter:
-            filter_type = diff_pair_filter.get('type', 'common_mode_choke')
-            ref = diff_pair_filter['ref']
-            net1 = diff_pair_filter['net1']
-            net2 = diff_pair_filter['net2']
-            
-            # Build base description for common-mode component
-            if filter_type == 'common_mode_choke':
-                cm_desc = f"Differential common-mode choke: {ref} on {net1}/{net2}"
-            elif filter_type == 'common_mode_capacitor':
-                cm_desc = f"Differential common-mode capacitor: {ref} between {net1}/{net2}"
-            else:
-                cm_desc = f"Differential filter: {ref} on {net1}/{net2}"
-            
-            # Analyze remaining components on THIS differential line (exclude common-mode component)
-            line_components = [comp for comp in component_analysis if comp['ref'] != ref]
-            
-            if line_components:
-                # Build topology for this line's individual components
-                line_desc_parts = []
-                for comp in line_components:
-                    c_ref = comp['ref']
-                    c_class = comp['component_class']
-                    c_type = comp['type']
-                    
-                    if c_type == 'series':
-                        line_desc_parts.append(f"{c_ref}({c_class}-series)")
-                    elif c_type == 'shunt':
-                        line_desc_parts.append(f"{c_ref}({c_class}-shunt)")
-                    else:
-                        line_desc_parts.append(f"{c_ref}({c_class})")
-                
-                line_topology = " → ".join(line_desc_parts)
-                
-                # Classify individual line filter topology
-                line_filter_type = self._classify_line_filter_type(line_components, inductor_prefixes, capacitor_prefixes, resistor_prefixes)
-                
-                # Combined description: common-mode + line filter
-                combined_desc = f"{cm_desc} + Line filter ({line_filter_type}): {line_topology}"
-                
-                # Return the stronger filter type (Pi/T/LC/RC > Differential)
-                if line_filter_type in ['Pi', 'T', 'LC']:
-                    return (line_filter_type, combined_desc)
-                else:
-                    return ('Differential + RC', combined_desc)
-            else:
-                # Only common-mode component, no additional line filtering
-                return ('Differential', cm_desc)
-        
-        if not component_analysis:
-            return ('None', 'No filter components found')
-        
-        # Build topology description
-        desc_parts = []
-        for comp in component_analysis:
-            ref = comp['ref']
-            comp_class = comp['component_class']
-            comp_type = comp['type']
-            
-            if comp_type == 'series':
-                desc_parts.append(f"{ref}({comp_class}-series)")
-            elif comp_type == 'shunt':
-                desc_parts.append(f"{ref}({comp_class}-shunt)")
-            else:
-                desc_parts.append(f"{ref}({comp_class})")
-        
-        topology_desc = " → ".join(desc_parts)
-        
-        # Extract component classes for pattern matching
-        series_classes = [comp['component_class'] for comp in component_analysis if comp['type'] == 'series']
-        shunt_classes = [comp['component_class'] for comp in component_analysis if comp['type'] == 'shunt']
-        
-        # Classify topology using config-based component classes
-        # Check if any series component starts with inductor prefix
-        has_series_L = any(
-            any(comp['ref'].startswith(prefix) for prefix in inductor_prefixes)
-            for comp in component_analysis if comp['type'] == 'series'
-        )
-        # Check if any shunt component starts with capacitor prefix
-        has_shunt_C = any(
-            any(comp['ref'].startswith(prefix) for prefix in capacitor_prefixes)
-            for comp in component_analysis if comp['type'] == 'shunt'
-        )
-        
-        # Check for series resistor presence (used in multiple checks below)
-        has_series_R = any(
-            any(comp['ref'].startswith(prefix) for prefix in resistor_prefixes)
-            for comp in component_analysis if comp['type'] == 'series'
-        )
-        
-        # Pi filter: Shunt-C → Series-L/R → Shunt-C
-        if len(shunt_components) >= 2 and (has_series_L or has_series_R):
-            # Check order: should have shunt, then series, then shunt
-            if (len(component_analysis) >= 3 and 
-                component_analysis[0]['type'] == 'shunt' and 
-                component_analysis[1]['type'] == 'series' and 
-                component_analysis[2]['type'] == 'shunt'):
-                if has_series_L:
-                    return ('Pi', f"Pi filter: {topology_desc}")
-                else:
-                    return ('RC', f"RC Pi filter: {topology_desc}")
-        
-        # T filter: Series-L/R → Shunt-C → Series-L/R
-        if len(series_components) >= 2 and has_shunt_C:
-            if (len(component_analysis) >= 3 and 
-                component_analysis[0]['type'] == 'series' and 
-                component_analysis[1]['type'] == 'shunt' and 
-                component_analysis[2]['type'] == 'series'):
-                if has_series_L:
-                    return ('T', f"T filter: {topology_desc}")
-                else:
-                    return ('T', f"RC T filter: {topology_desc}")
-        
-        # LC filter: Series L + Shunt C (any order)
-        if has_series_L and has_shunt_C:
-            return ('LC', f"LC filter: {topology_desc}")
-        
-        # RC filter: Series R + Shunt C (any order, but not T pattern)
-        if has_series_R and has_shunt_C:
-            return ('RC', f"RC filter: {topology_desc}")
-        
-        # Single component filters
-        if has_series_L:
-            return ('L', f"Series inductor: {topology_desc}")
-        if has_shunt_C:
-            return ('C', f"Shunt capacitor: {topology_desc}")
-        if has_series_R:
-            return ('R', f"Series resistor: {topology_desc}")
-        
-        # Fallback: simple filter
-        return ('simple', f"Simple filter: {topology_desc}")
-    
-    def _classify_filter_topology(self, board, net, filter_components, connector_pos):
-        """Legacy filter topology classification (kept for backward compatibility).
-        
-        NOTE: This function uses simplified distance-based sorting.
-        Use _classify_filter_topology_improved() for accurate circuit tracing.
-        """
-        if not filter_components:
-            return None, float('inf')
-        
-        # Sort by distance from connector
-        sorted_components = sorted(filter_components, key=lambda x: x[2])
-        
-        # Extract component types
-        refs = [comp[0] for comp in sorted_components]
-        types = [ref[0] for ref in refs]  # First letter: R, L, C, F(B), D
-        
-        # Get nearest distance
-        nearest_distance = sorted_components[0][2]
-        
-        # Classify topology based on component sequence
-        if self._is_pi_filter(types):
-            return 'Pi', nearest_distance
-        elif self._is_t_filter(types):
-            return 'T', nearest_distance
-        elif 'L' in types and 'C' in types:
-            return 'LC', nearest_distance
-        elif 'R' in types and 'C' in types:
-            return 'RC', nearest_distance
-        elif 'L' in types or 'F' in types:  # FB = ferrite bead
-            return 'L', nearest_distance
-        elif 'C' in types:
-            return 'C', nearest_distance
-        elif 'R' in types:
-            return 'R', nearest_distance
-        else:
-            return 'simple', nearest_distance
-    
-    def _is_pi_filter(self, types):
-        """Check if component sequence forms Pi filter (C-L-C or C-FB-C)"""
-        # Pi filter: Capacitor - Inductor/FB - Capacitor
-        types_str = ''.join(types)
-        return ('CLC' in types_str or 'CFC' in types_str or 
-                'CLF' in types_str or 'FLC' in types_str or 'FCF' in types_str)
-    
-    def _is_t_filter(self, types):
-        """Check if component sequence forms T filter (L-C-L or FB-C-FB)"""
-        # T filter: Inductor/FB - Capacitor - Inductor/FB
-        types_str = ''.join(types)
-        return ('LCL' in types_str or 'FCF' in types_str or 
-                'LCF' in types_str or 'FCL' in types_str)
-    
-    def _check_filter_requirement(self, actual_type, required_type):
-        """Check if actual filter meets minimum requirement.
-        
-        Handles compound types like 'Differential + RC' where differential filtering
-        combined with line filtering is evaluated against single-ended requirements.
-        
-        Differential + X is generally better than X alone because:
-        - Common-mode filtering protects against differential-mode EMI
-        - Line filtering (X) protects against common-mode EMI
-        - Together provides superior overall EMI protection
-        """
-        if actual_type is None:
-            return False
-        
-        # Filter hierarchy (best to worst)
-        hierarchy = ['Pi', 'T', 'LC', 'RC', 'L', 'C', 'R', 'simple']
-        
-        # Handle compound differential filter types (e.g., "Differential + RC")
-        if 'Differential' in actual_type:
-            if '+' in actual_type:
-                # Extract line filter type after "Differential + "
-                parts = actual_type.split('+')
-                if len(parts) >= 2:
-                    line_filter = parts[1].strip()
-                    try:
-                        line_rank = hierarchy.index(line_filter)
-                        required_rank = hierarchy.index(required_type)
-                        
-                        # Differential + line filter is one level better than line filter alone
-                        # (common-mode filtering bonus moves it up in hierarchy)
-                        # Example: "Differential + RC" is treated as equivalent to "LC"
-                        effective_rank = max(0, line_rank - 1)
-                        
-                        return effective_rank <= required_rank
-                    except ValueError:
-                        pass
-            # Pure "Differential" (common-mode only) is considered equivalent to RC
-            try:
-                actual_rank = hierarchy.index('RC')
-                required_rank = hierarchy.index(required_type)
-                return actual_rank <= required_rank
-            except ValueError:
-                return False
-        
-        # Standard filter type comparison
-        try:
-            actual_rank = hierarchy.index(actual_type)
-            required_rank = hierarchy.index(required_type)
-            return actual_rank <= required_rank
-        except ValueError:
-            # Unknown filter type
-            return False
+
 
     def clear_previous_markers(self, board):
         """Remove old markers from the marker layer to refresh the report"""

@@ -53,7 +53,7 @@ violation_message = "NO GND VIA"
 # DECOUPLING CAPACITOR RULES
 # ======================================================================
 [decoupling]
-enabled = false
+enabled = true
 description = "Verifies proximity of decoupling capacitors to IC power pins"
 
 # Maximum distance from IC power pin to nearest capacitor (mm)
@@ -87,7 +87,7 @@ show_capacitor_label = true       # Show capacitor reference (e.g., "→ C15")
 # TRACE WIDTH RULES (Future Implementation)
 # ======================================================================
 [trace_width]
-enabled = false
+enabled = false 
 description = "Verifies minimum trace widths for high-current nets"
 
 # Minimum trace width for power traces (mm)
@@ -105,7 +105,7 @@ violation_message = "TRACE TOO NARROW"
 # GROUND PLANE RULES - High-Speed Signal Return Path Verification
 # ======================================================================
 [ground_plane]
-enabled = false
+enabled = true
 description = "Verifies continuous ground plane underneath high-speed traces for proper return path and EMC compliance"
 
 # Net classes requiring ground plane verification (high-speed signals)
@@ -265,7 +265,7 @@ violation_message = "HIGH-SPEED VIOLATION"
 # EMI FILTERING RULES
 # ======================================================================
 [emi_filtering]
-enabled = false
+enabled = true
 description = "Verifies EMI filtering on interface connectors (USB, Ethernet, HDMI, CAN, RS485)"
 
 # Connector identification - components with this reference prefix
