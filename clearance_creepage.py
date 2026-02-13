@@ -128,6 +128,10 @@ class ClearanceCreepageChecker:
                     self.log("  ⚠️  Skipping (no features in one or both domains)")
                     continue
                 
+                # Log number of comparisons to help user understand performance
+                num_comparisons = len(features_a) * len(features_b)
+                self.log(f"  Comparing {len(features_a)} × {len(features_b)} = {num_comparisons} pad pair(s)")
+                
                 # Calculate minimum clearance
                 result = self._calculate_clearance(features_a, features_b)
                 if not result:
@@ -405,6 +409,132 @@ class ClearanceCreepageChecker:
         # TODO: Implement
         pass
     
+    def _get_pad_polygon(self, pad, layer):
+        """
+        Get the actual polygon outline of a pad accounting for shape and rotation.
+        
+        Args:
+            pad: pcbnew.PAD object
+            layer: pcbnew layer ID
+        
+        Returns:
+            SHAPE_POLY_SET: Actual pad outline polygon
+        """
+        # Create polygon set
+        poly_set = pcbnew.SHAPE_POLY_SET()
+        
+        # Transform pad shape to polygon (accounts for rotation, oval, rounded rect, etc.)
+        # Parameters: poly_set, layer, clearance, maxError, errorLoc
+        # maxError: Maximum deviation when approximating curves (0.005mm = 5 micrometers)
+        clearance = 0  # Exact pad outline
+        max_error = pcbnew.FromMM(0.005)  # 5um tolerance for curve approximation
+        pad.TransformShapeToPolygon(poly_set, layer, clearance, max_error, pcbnew.ERROR_INSIDE)
+        
+        return poly_set
+    
+    def _calculate_polygon_distance(self, poly_a, poly_b):
+        """
+        Calculate minimum edge-to-edge distance between two polygons.
+        Uses point-to-segment distance for all vertices against all edges.
+        
+        Args:
+            poly_a: SHAPE_POLY_SET for first pad
+            poly_b: SHAPE_POLY_SET for second pad
+        
+        Returns:
+            float: Minimum distance in internal units
+        """
+        min_distance = float('inf')
+        
+        # Get outline 0 from both polygon sets (pads typically have one outline)
+        if poly_a.OutlineCount() == 0 or poly_b.OutlineCount() == 0:
+            return min_distance
+        
+        outline_a = poly_a.Outline(0)
+        outline_b = poly_b.Outline(0)
+        
+        # Get point count for both outlines
+        count_a = outline_a.PointCount()
+        count_b = outline_b.PointCount()
+        
+        # Early exit threshold: If we find distance < 0.01mm, stop searching (likely a violation)
+        early_exit_threshold = pcbnew.FromMM(0.01)
+        
+        # Check all vertices of polygon A against all edges of polygon B
+        for i in range(count_a):
+            point_a = outline_a.CPoint(i)
+            
+            # Check distance to all edges of polygon B
+            for j in range(count_b):
+                point_b1 = outline_b.CPoint(j)
+                point_b2 = outline_b.CPoint((j + 1) % count_b)  # Next point (wrap around)
+                
+                # Calculate distance from point A to line segment B1-B2
+                dist = self._point_to_segment_distance(point_a, point_b1, point_b2)
+                if dist < min_distance:
+                    min_distance = dist
+                    # Early exit if we found very close proximity
+                    if min_distance < early_exit_threshold:
+                        return min_distance
+        
+        # Check all vertices of polygon B against all edges of polygon A
+        for i in range(count_b):
+            point_b = outline_b.CPoint(i)
+            
+            # Check distance to all edges of polygon A
+            for j in range(count_a):
+                point_a1 = outline_a.CPoint(j)
+                point_a2 = outline_a.CPoint((j + 1) % count_a)  # Next point (wrap around)
+                
+                # Calculate distance from point B to line segment A1-A2
+                dist = self._point_to_segment_distance(point_b, point_a1, point_a2)
+                if dist < min_distance:
+                    min_distance = dist
+                    # Early exit if we found very close proximity
+                    if min_distance < early_exit_threshold:
+                        return min_distance
+        
+        return min_distance
+    
+    def _point_to_segment_distance(self, point, seg_start, seg_end):
+        """
+        Calculate minimum distance from a point to a line segment.
+        
+        Args:
+            point: VECTOR2I point
+            seg_start: VECTOR2I segment start
+            seg_end: VECTOR2I segment end
+        
+        Returns:
+            float: Minimum distance in internal units
+        """
+        # Vector from segment start to end
+        dx = seg_end.x - seg_start.x
+        dy = seg_end.y - seg_start.y
+        
+        # Handle degenerate case (segment is a point)
+        segment_length_sq = dx * dx + dy * dy
+        if segment_length_sq == 0:
+            # Segment is just a point, return distance to that point
+            return self.get_distance(point, seg_start)
+        
+        # Calculate projection parameter t
+        # t represents where along the segment the closest point lies
+        # t=0 means seg_start, t=1 means seg_end
+        t = ((point.x - seg_start.x) * dx + (point.y - seg_start.y) * dy) / segment_length_sq
+        
+        # Clamp t to [0, 1] to stay on the segment
+        t = max(0, min(1, t))
+        
+        # Calculate closest point on segment
+        closest_x = seg_start.x + t * dx
+        closest_y = seg_start.y + t * dy
+        
+        # Return distance from point to closest point
+        dist_x = point.x - closest_x
+        dist_y = point.y - closest_y
+        return math.sqrt(dist_x * dist_x + dist_y * dist_y)
+    
     def _calculate_clearance(self, features_a, features_b):
         """
         Calculate minimum 2D clearance (air gap) between two domain feature lists.
@@ -428,15 +558,39 @@ class ClearanceCreepageChecker:
         # Compare all pad pairs between domains (Phase 1: pad-to-pad only)
         for feature_a in features_a:
             ftype_a, pad_a, pos_a, net_a, voltage_a, reinforced_a = feature_a
+            size_a = pad_a.GetSize()
+            max_extent_a = max(size_a.x, size_a.y) / 2.0
             
             for feature_b in features_b:
                 ftype_b, pad_b, pos_b, net_b, voltage_b, reinforced_b = feature_b
+                size_b = pad_b.GetSize()
+                max_extent_b = max(size_b.x, size_b.y) / 2.0
                 
-                # Calculate 2D distance using injected utility function
-                distance = self.get_distance(pos_a, pos_b)
+                # FAST PATH: Use center-to-center distance for quick rejection
+                center_distance = self.get_distance(pos_a, pos_b)
                 
-                if distance < min_distance:
-                    min_distance = distance
+                # Quick approximation: subtract max extents for rough edge distance
+                approx_edge_distance = center_distance - max_extent_a - max_extent_b
+                
+                # If approximate distance is already much larger than current minimum,
+                # skip expensive polygon calculation (threshold: 2mm)
+                if approx_edge_distance > min_distance + pcbnew.FromMM(2.0):
+                    continue
+                
+                # ACCURATE PATH: Only calculate exact polygon distance for close pads
+                layer_a = pad_a.GetLayer()
+                layer_b = pad_b.GetLayer()
+                poly_a = self._get_pad_polygon(pad_a, layer_a)
+                poly_b = self._get_pad_polygon(pad_b, layer_b)
+                
+                # Calculate accurate EDGE-TO-EDGE distance between polygons
+                edge_distance = self._calculate_polygon_distance(poly_a, poly_b)
+                
+                # Ensure distance is not negative (overlapping pads)
+                edge_distance = max(0, edge_distance)
+                
+                if edge_distance < min_distance:
+                    min_distance = edge_distance
                     closest_point_a = pos_a
                     closest_point_b = pos_b
                     closest_net_a = net_a
