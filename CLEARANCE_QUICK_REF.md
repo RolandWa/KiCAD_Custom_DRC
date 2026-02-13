@@ -1,7 +1,8 @@
 # PCB Clearance & Creepage Quick Reference Card
 # IEC60664-1 / IPC2221
 
-**Last Updated:** February 6, 2026
+**Status:** ✅ Implementation Active (Use with EMC Auditor Plugin)  
+**Last Updated:** February 13, 2026
 
 **Conditions:** Overvoltage Category II, Pollution Degree 2, Material Group II (FR4), Altitude <2000m
 
