@@ -53,6 +53,13 @@ except ImportError as e:
     print(f"WARNING: Could not import ground_plane module: {e}")
     GroundPlaneChecker = None
 
+# Import signal integrity checking module
+try:
+    from signal_integrity import SignalIntegrityChecker
+except ImportError as e:
+    print(f"WARNING: Could not import signal_integrity module: {e}")
+    SignalIntegrityChecker = None
+
 class EMCSimpleDialog(wx.Dialog):
     """Simple dialog for quick audit summary with config file access"""
     def __init__(self, parent, message, violations_count, config_path=None):
@@ -413,6 +420,16 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
             violations_found += clearance_violations
             print(f"\nClearance check complete: {clearance_violations} violation(s) found")
         
+        # 6. Signal Integrity Verification (if enabled)
+        signal_integrity_cfg = self.config.get('signal_integrity', {})
+        if signal_integrity_cfg.get('impedance', {}).get('enabled', False):
+            print("\n" + "="*70)
+            print("STARTING SIGNAL INTEGRITY CHECK")
+            print("="*70)
+            si_violations = self.check_signal_integrity(board, marker_layer, signal_integrity_cfg)
+            violations_found += si_violations
+            print(f"\nSignal integrity check complete: {si_violations} violation(s) found")
+        
         # Future rules can be added here:
         # if self.config.get('trace_width', {}).get('enabled', False):
         #     violations_found += self.check_trace_width(board, marker_layer)
@@ -579,6 +596,50 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         )
         
         return violations
+    
+    def check_signal_integrity(self, board, marker_layer, config):
+        """Check signal integrity: controlled impedance, crosstalk, return path, etc.
+        
+        This function delegates to the SignalIntegrityChecker module for implementation.
+        Complete configuration is in emc_rules.toml [signal_integrity] section.
+        
+        The checker reuses utility functions from this plugin:
+        - draw_error_marker(): Draw violation markers on User.Comments layer
+        - draw_arrow(): Draw directional arrows between violation points
+        - get_distance(): Calculate distance between two points
+        
+        Returns:
+            int: Number of violations found
+        """
+        # Check if module is available
+        if SignalIntegrityChecker is None:
+            print("⚠️  Signal integrity checker module not available")
+            print("HINT: Ensure signal_integrity.py is in same directory as plugin")
+            return 0
+        
+        # Create checker instance with shared report lines
+        verbose = self.config.get('general', {}).get('verbose_logging', True)
+        checker = SignalIntegrityChecker(
+            board=board,
+            marker_layer=marker_layer,
+            config=config,
+            report_lines=self.report_lines,
+            verbose=verbose,
+            auditor=self  # Pass auditor instance for utility functions
+        )
+        
+        # Run check with injected utility functions (avoids code duplication)
+        log_func = self.create_logger(verbose, self.report_lines)
+        violations = checker.check(
+            draw_marker_func=self.draw_error_marker,
+            draw_arrow_func=self.draw_arrow,
+            get_distance_func=self.get_distance,
+            log_func=log_func,
+            create_group_func=self.create_violation_group
+        )
+        
+        return violations
+
     def get_distance(self, p1, p2):
         return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
     

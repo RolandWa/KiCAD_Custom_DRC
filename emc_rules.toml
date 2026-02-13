@@ -741,3 +741,26 @@ description = "Mains to Ground"
 # Requirements: isolation_requirements or IEC60664/IPC2221 tables, apply safety_margin_factor
 # Advanced: Detect slots/cutouts, conformal coating, isolation barriers, temperature derating
 
+# ======================================================================
+# SIGNAL INTEGRITY RULES
+# ======================================================================
+[signal_integrity.impedance]
+enabled = true
+description = "Controlled impedance verification using analytical transmission line formulas"
+
+# Target impedances per KiCad Net Class (ohms)
+# Net Class names from KiCad design → target impedance
+target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 50.0 }
+
+# Impedance tolerance (ohms) - applied to all net classes
+# Example: USB 90Ω ± 5Ω → acceptable range 85-95Ω, HighSpeed 50Ω ± 5Ω → 45-55Ω
+impedance_tolerance_ohms = 5.0
+
+# Calculation method: Analytical formulas (IPC-2141, Wadell)
+# - Microstrip: External layer with plane below
+# - Stripline: Internal layer between planes
+# - CPW: Coplanar waveguide with/without plane
+# Accuracy: ±5-10% (sufficient for DRC, much faster than FEM)
+
+# Stackup data is automatically read from the .kicad_pcb file (stackup section)
+# Falls back to FR-4 defaults (35μm copper, εr=4.3) if parsing fails
