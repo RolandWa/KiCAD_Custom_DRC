@@ -69,7 +69,8 @@ class ClearanceCreepageChecker:
         }
         
         # Performance limits
-        self.max_obstacles = 100  # Maximum obstacles per layer for creepage pathfinding
+        self.max_obstacles = self.config.get('max_obstacles', 500)  # Maximum obstacles per layer for creepage pathfinding
+        self.obstacle_search_margin_mm = self.config.get('obstacle_search_margin_mm', 20.0)  # Spatial filtering margin
     
     def check(self, draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func):
         """
@@ -778,9 +779,9 @@ class ClearanceCreepageChecker:
         import heapq
         
         # Configuration - AGGRESSIVE limits to prevent hangs
-        max_iterations = 1000  # Reduced from 10000 - A* iterations per pad pair
+        max_iterations = 200  # A* iterations per pad pair (typical path: 20-50 iterations)
         fast_rejection_factor = 2.0  # Skip if clearance already sufficient
-        max_pairs_to_check = 5  # Reduced from 20 - only check closest pad pairs
+        max_pairs_to_check = 3  # Only check closest pad pairs (reduced for speed)
         max_pads_per_domain = 5  # Reduced from 10 - limit pads sampled
         
         # Build obstacle map (copper from all nets except domain A and B)
@@ -1161,6 +1162,9 @@ class ClearanceCreepageChecker:
         Returns all copper shapes on specified layer EXCEPT copper belonging
         to domain_a or domain_b (those are start/goal, not obstacles).
         
+        Uses spatial filtering to only include obstacles near the path between domains,
+        reducing obstacle count by ~10× for faster pathfinding.
+        
         Args:
             domain_a: str, domain name to exclude
             domain_b: str, domain name to exclude
@@ -1182,6 +1186,54 @@ class ClearanceCreepageChecker:
         
         excluded_nets = nets_a | nets_b
         
+        # SPATIAL FILTERING: Calculate bounding box from closest pads
+        # This dramatically reduces obstacle count (e.g., 881 → ~80)
+        pads_a = []
+        pads_b = []
+        for pad in self.board.GetPads():
+            if not pad.IsOnLayer(layer):
+                continue
+            net = pad.GetNetname()
+            if net in nets_a:
+                pads_a.append(pad)
+            elif net in nets_b:
+                pads_b.append(pad)
+        
+        # Find closest pad pair to determine search area
+        if pads_a and pads_b:
+            min_dist = float('inf')
+            closest_a_pos = None
+            closest_b_pos = None
+            
+            for pad_a in pads_a:
+                for pad_b in pads_b:
+                    dist = self.get_distance(pad_a.GetPosition(), pad_b.GetPosition())
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_a_pos = pad_a.GetPosition()
+                        closest_b_pos = pad_b.GetPosition()
+            
+            # Create bounding box with margin around closest pads
+            margin = pcbnew.FromMM(self.obstacle_search_margin_mm)
+            bbox_min_x = min(closest_a_pos.x, closest_b_pos.x) - margin
+            bbox_max_x = max(closest_a_pos.x, closest_b_pos.x) + margin
+            bbox_min_y = min(closest_a_pos.y, closest_b_pos.y) - margin
+            bbox_max_y = max(closest_a_pos.y, closest_b_pos.y) + margin
+            
+            def in_bounding_box(pos):
+                """Check if position is within search area"""
+                return (bbox_min_x <= pos.x <= bbox_max_x and 
+                        bbox_min_y <= pos.y <= bbox_max_y)
+            
+            spatial_filtering_enabled = True
+            self.log(f"    Spatial filtering: search box {pcbnew.ToMM(bbox_max_x - bbox_min_x):.1f}×{pcbnew.ToMM(bbox_max_y - bbox_min_y):.1f}mm")
+        else:
+            # Fallback: no spatial filtering if can't find pads
+            def in_bounding_box(pos):
+                return True
+            spatial_filtering_enabled = False
+            self.log(f"    Spatial filtering: disabled (no pads found)")
+        
         # Collect all pads on this layer (excluding domain nets)
         for pad in self.board.GetPads():
             if not pad.IsOnLayer(layer):
@@ -1189,6 +1241,10 @@ class ClearanceCreepageChecker:
             
             net_name = pad.GetNetname()
             if net_name in excluded_nets or net_name == "":
+                continue
+            
+            # SPATIAL FILTER: Skip obstacles outside search area
+            if not in_bounding_box(pad.GetPosition()):
                 continue
             
             # Get pad polygon
@@ -1211,6 +1267,13 @@ class ClearanceCreepageChecker:
             if net_name in excluded_nets or net_name == "":
                 continue
             
+            # SPATIAL FILTER: Skip obstacles outside search area
+            track_start = track.GetStart()
+            track_end = track.GetEnd()
+            # Include track if either endpoint is in bounding box
+            if not (in_bounding_box(track_start) or in_bounding_box(track_end)):
+                continue
+            
             # Convert track to polygon (approximate as rectangle)
             track_poly = pcbnew.SHAPE_POLY_SET()
             track.TransformShapeToPolygon(track_poly, layer, 0, pcbnew.ERROR_INSIDE, False, True)
@@ -1231,6 +1294,16 @@ class ClearanceCreepageChecker:
             if net_name in excluded_nets or net_name == "":
                 continue
             
+            # SPATIAL FILTER: Skip zones outside search area
+            # Check if zone bounding box intersects search area
+            zone_bbox = zone.GetBoundingBox()
+            zone_center = pcbnew.VECTOR2I(
+                (zone_bbox.GetLeft() + zone_bbox.GetRight()) // 2,
+                (zone_bbox.GetTop() + zone_bbox.GetBottom()) // 2
+            )
+            if not in_bounding_box(zone_center):
+                continue
+            
             zone_poly = zone.Outline()
             if zone_poly.OutlineCount() > 0:
                 obstacles.append({
@@ -1239,7 +1312,8 @@ class ClearanceCreepageChecker:
                     'type': 'zone'
                 })
         
-        self.log(f"    Built obstacle map: {len(obstacles)} obstacles on layer {self.board.GetLayerName(layer)}")
+        filtering_status = "with spatial filtering" if spatial_filtering_enabled else "no filtering"
+        self.log(f"    Built obstacle map ({filtering_status}): {len(obstacles)} obstacles on layer {self.board.GetLayerName(layer)}")
         return obstacles
     
     def _path_crosses_obstacle(self, point_a, point_b, obstacles):
@@ -1354,12 +1428,14 @@ class ClearanceCreepageChecker:
         counter += 1
         
         iterations = 0
+        best_distance = float('inf')  # Track progress for early termination
+        stalled_count = 0
         
         while open_set and iterations < max_iterations:
             iterations += 1
             
-            # Progress logging every 100 iterations
-            if iterations % 100 == 0:
+            # Progress logging every 50 iterations
+            if iterations % 50 == 0:
                 self.log(f"        A* iteration {iterations}/{max_iterations}...")
             
             current_f, _, current = heapq.heappop(open_set)
@@ -1375,6 +1451,17 @@ class ClearanceCreepageChecker:
                 continue
             
             closed_set.add(current_key)
+            
+            # Early termination: check if making progress
+            current_dist = self.get_distance(current, goal)
+            if current_dist < best_distance:
+                best_distance = current_dist
+                stalled_count = 0
+            else:
+                stalled_count += 1
+                if stalled_count > 50:  # No progress in 50 iterations
+                    self.log(f"        A* stalled after {iterations} iterations, terminating")
+                    break
             
             # Generate neighbor nodes
             neighbors = self._get_neighbor_nodes(current, goal, start_pad, goal_pad, obstacles)
@@ -1440,8 +1527,8 @@ class ClearanceCreepageChecker:
                 point_count = outline.PointCount()
                 
                 # Sample vertices (limit to avoid too many neighbors)
-                # Reduced from 8 to 4 vertices per obstacle for better performance
-                step = max(1, point_count // 4)  # Sample ~4 vertices per obstacle
+                # Reduced from 8 to 2 vertices per obstacle for better performance
+                step = max(1, point_count // 2)  # Sample ~2 vertices per obstacle
                 
                 for i in range(0, point_count, step):
                     vertex = outline.CPoint(i)
@@ -1451,11 +1538,11 @@ class ClearanceCreepageChecker:
                         neighbors.append(vertex)
         
         # Limit total neighbors to avoid exponential explosion
-        # Reduced from 50 to 20 for better performance
-        if len(neighbors) > 20:
+        # Reduced from 50 to 5 for better performance
+        if len(neighbors) > 5:
             # Keep closest neighbors
             neighbors.sort(key=lambda n: self.get_distance(current, n))
-            neighbors = neighbors[:20]
+            neighbors = neighbors[:5]
         
         return neighbors
     

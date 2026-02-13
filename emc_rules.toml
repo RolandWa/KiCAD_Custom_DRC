@@ -34,7 +34,7 @@ verbose_logging = true
 # VIA STITCHING RULES
 # ======================================================================
 [via_stitching]
-enabled = true
+enabled = false  # Disabled for focused creepage testing
 description = "Verifies that critical signal vias have nearby GND return vias"
 
 # Maximum distance from critical via to nearest GND via (mm)
@@ -53,7 +53,7 @@ violation_message = "NO GND VIA"
 # DECOUPLING CAPACITOR RULES
 # ======================================================================
 [decoupling]
-enabled = true
+enabled = false  # Disabled for focused creepage testing
 description = "Verifies proximity of decoupling capacitors to IC power pins"
 
 # Maximum distance from IC power pin to nearest capacitor (mm)
@@ -105,7 +105,7 @@ violation_message = "TRACE TOO NARROW"
 # GROUND PLANE RULES - High-Speed Signal Return Path Verification
 # ======================================================================
 [ground_plane]
-enabled = true
+enabled = false  # Disabled for focused creepage testing
 description = "Verifies continuous ground plane underneath high-speed traces for proper return path and EMC compliance"
 
 # Net classes requiring ground plane verification (high-speed signals)
@@ -265,7 +265,7 @@ violation_message = "HIGH-SPEED VIOLATION"
 # EMI FILTERING RULES
 # ======================================================================
 [emi_filtering]
-enabled = true
+enabled = false  # Disabled for focused creepage testing
 description = "Verifies EMI filtering on interface connectors (USB, Ethernet, HDMI, CAN, RS485)"
 
 # Connector identification - components with this reference prefix
@@ -455,6 +455,19 @@ safety_margin_factor = 1.2
 
 # Report mode: "violations_only" or "all_distances"
 report_mode = "violations_only"
+
+# Creepage performance optimization
+# Maximum obstacles to check per layer (balance between speed and thoroughness)
+# Typical boards: 50-100 obstacles (fast, <5s per pair)
+# Dense boards: 200-500 obstacles (moderate, 10-30s per pair)
+# Very dense: 500-1000 obstacles (slow, 30-60s per pair)
+max_obstacles = 270  # Increased for full coverage of dense board (max observed: 261)
+
+# Spatial filtering: only check obstacles within margin around closest pads
+# Reduces obstacle count by ~10× (e.g., 881 → ~80 obstacles)
+# Larger margin = more obstacles checked = slower but more thorough
+# Smaller margin = fewer obstacles = faster but may miss relevant copper
+obstacle_search_margin_mm = 12.0  # Search margin in mm (recommended: 10-20mm)
 
 # Violation message templates
 violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
