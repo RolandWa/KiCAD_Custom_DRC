@@ -419,19 +419,75 @@ material_group = "II"  # Standard FR4 PCB material
 # Standard: ≤2000m, High altitude: >2000m requires increased clearance
 altitude_m = 1000
 
+# Internal layer clearance reduction factor (IPC2221 Section 6.2)
+# Internal layers are protected by PCB substrate and can have reduced clearance
+# Typical values: 0.5-0.6 (50-60% of external layer clearance)
+# Set to 1.0 to disable layer-specific adjustment (same clearance for all layers)
+internal_layer_clearance_factor = 0.6
+
+# Overvoltage category correction factors (IEC60664-1)
+# Clearance tables are for OVC-II. Other categories require adjustment:
+# - OVC-I:  0.8× (better transient protection in equipment)
+# - OVC-II: 1.0× (baseline - appliances, general equipment)
+# - OVC-III: 1.5× (distribution, fixed installation, higher transients)
+# - OVC-IV: 2.0× (utility connection, extreme transients)
+# NOTE: Current tables are for OVC-II. If overvoltage_category ≠ "II", 
+# clearance will be adjusted by the factor below.
+overvoltage_category_factors = { I = 0.8, II = 1.0, III = 1.5, IV = 2.0 }
+
+# ======================================================================
+# CHECKING PARAMETERS
+# ======================================================================
+
+# Check types enabled
+check_clearance = true       # Air gap distance (implemented)
+check_creepage = true        # Surface distance (A* pathfinding implementation)
+check_different_layers = false  # Check clearance between layers (NOT YET IMPLEMENTED)
+
+# Trace-to-trace minimum spacing (overrides if larger than standard)
+min_trace_spacing_mm = 0.2
+
+# Pad-to-pad minimum spacing
+min_pad_spacing_mm = 0.3
+
+# Safety margin multiplier (e.g., 1.2 = 20% safety margin)
+safety_margin_factor = 1.2
+
+# Report mode: "violations_only" or "all_distances"
+report_mode = "violations_only"
+
+# Violation message templates
+violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+
 # ======================================================================
 # VOLTAGE-TO-CLEARANCE TABLES (IEC60664-1)
 # ======================================================================
+# NOTE: Tables below are configured for Overvoltage Category II
+# If using OVC-I, III, or IV, values will be adjusted automatically
 
 # Clearance distances for Overvoltage Category II, Pollution Degree 2
 # Format: [working_voltage_rms, clearance_mm]
 # Based on IEC60664-1 Table F.1 and F.2
+
+# Sub-12V: IPC2221 functional spacing (non-safety, manufacturability)
+# Below SELV limit (<50V): No electrical shock hazard, spacing for reliability
 [[clearance_creepage.iec60664_clearance_table]]
-voltage_class = "Extra Low Voltage (ELV)"
+voltage_class = "Extra Extra Low Voltage (Functional Spacing)"
+note = "IPC2221 Table 6-1: 0-30V DC uses minimum PCB fabrication capability (5 mil)"
 voltages = [
-    [12, 0.5],      # 12V RMS
-    [24, 0.5],      # 24V RMS
-    [50, 0.6],      # 50V RMS (SELV limit)
+    [0, 0.13],      # 0V - Minimum PCB fab capability (5 mil / 0.13mm)
+    [3.3, 0.13],    # 3.3V - Standard logic level (IPC2221: 0-30V)
+    [5, 0.13],      # 5V - USB, TTL logic (IPC2221: 0-30V)
+]
+
+[[clearance_creepage.iec60664_clearance_table]]
+voltage_class = "Extra Low Voltage (ELV/SELV)"
+note = "SELV ≤50V: Safety Extra Low Voltage, safe to touch"
+voltages = [
+    [12, 0.5],      # 12V RMS - Automotive, industrial
+    [24, 0.5],      # 24V RMS - Industrial automation, PoE
+    [50, 0.6],      # 50V RMS (SELV upper limit)
 ]
 
 [[clearance_creepage.iec60664_clearance_table]]
@@ -456,12 +512,65 @@ voltages = [
 # CREEPAGE DISTANCE TABLES (IEC60664-1)
 # ======================================================================
 
-# Creepage distances for Material Group II (FR4), Pollution Degree 2
+# Creepage distance depends on:
+# 1. Working voltage (RMS or DC)
+# 2. Material group (CTI - Comparative Tracking Index)
+#    - Group I:    CTI ≥ 600 (PTFE, ceramics) - BEST
+#    - Group II:   CTI 400-599 (standard FR4) - TYPICAL
+#    - Group IIIa: CTI 175-399 (lower grade)
+#    - Group IIIb: CTI 100-174 (poor) - WORST
+# 3. Pollution degree (environmental contamination)
+#    - PD1: Clean, dry, no pollution
+#    - PD2: Non-conductive pollution, occasional condensation - TYPICAL
+#    - PD3: Conductive pollution, frequent condensation
+#    - PD4: Continuous conductive pollution (water, metal dust)
+
 # Format: [working_voltage_rms, creepage_mm]
-# Based on IEC60664-1 Table F.4
+# Based on IEC60664-1 Table F.4, F.5, F.6, F.7
+
+# ----------------------------------------------------------------------
+# Material Group I (CTI ≥ 600) - Best insulation materials
+# ----------------------------------------------------------------------
 [[clearance_creepage.iec60664_creepage_table]]
-material = "Material Group II (FR4)"
+material = "Material Group I"
+pollution = "Pollution Degree 1"
+note = "Clean environment, best material (PTFE, ceramics)"
+voltages = [
+    [12, 0.2],      # 12V RMS
+    [24, 0.25],     # 24V RMS
+    [50, 0.4],      # 50V RMS
+    [100, 0.63],    # 100V RMS
+    [150, 0.9],     # 150V RMS
+    [230, 1.25],    # 230V RMS (EU mains)
+    [300, 1.6],     # 300V RMS
+    [400, 2.0],     # 400V RMS
+    [600, 2.8],     # 600V RMS
+    [800, 3.75],    # 800V RMS
+    [1000, 5.0],    # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group I"
 pollution = "Pollution Degree 2"
+note = "Typical environment, best material"
+voltages = [
+    [12, 0.25],     # 12V RMS
+    [24, 0.32],     # 24V RMS
+    [50, 0.5],      # 50V RMS
+    [100, 0.8],     # 100V RMS
+    [150, 1.12],    # 150V RMS
+    [230, 1.6],     # 230V RMS (EU mains)
+    [300, 2.0],     # 300V RMS
+    [400, 2.5],     # 400V RMS
+    [600, 3.55],    # 600V RMS
+    [800, 4.75],    # 800V RMS
+    [1000, 6.3],    # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group I"
+pollution = "Pollution Degree 3"
+note = "Harsh environment (conductive pollution), best material"
 voltages = [
     [12, 0.4],      # 12V RMS
     [24, 0.5],      # 24V RMS
@@ -476,41 +585,247 @@ voltages = [
     [1000, 10.0],   # 1000V RMS
 ]
 
+# ----------------------------------------------------------------------
+# Material Group II (CTI 400-599) - Standard FR4 PCB material
+# ----------------------------------------------------------------------
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 1"
+note = "Clean environment, standard FR4"
+voltages = [
+    [12, 0.25],     # 12V RMS
+    [24, 0.32],     # 24V RMS
+    [50, 0.5],      # 50V RMS
+    [100, 0.8],     # 100V RMS
+    [150, 1.12],    # 150V RMS
+    [230, 1.6],     # 230V RMS (EU mains)
+    [300, 2.0],     # 300V RMS
+    [400, 2.5],     # 400V RMS
+    [600, 3.55],    # 600V RMS
+    [800, 4.75],    # 800V RMS
+    [1000, 6.3],    # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 2"
+note = "TYPICAL: Standard office/industrial environment with FR4"
+voltages = [
+    [12, 0.4],      # 12V RMS
+    [24, 0.5],      # 24V RMS
+    [50, 0.8],      # 50V RMS
+    [100, 1.25],    # 100V RMS
+    [150, 1.8],     # 150V RMS
+    [230, 2.5],     # 230V RMS (EU mains)
+    [300, 3.2],     # 300V RMS
+    [400, 4.0],     # 400V RMS
+    [600, 5.6],     # 600V RMS
+    [800, 7.5],     # 800V RMS
+    [1000, 10.0],   # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 3"
+note = "Harsh environment (conductive pollution), standard FR4"
+voltages = [
+    [12, 0.63],     # 12V RMS
+    [24, 0.8],      # 24V RMS
+    [50, 1.25],     # 50V RMS
+    [100, 2.0],     # 100V RMS
+    [150, 2.8],     # 150V RMS
+    [230, 4.0],     # 230V RMS (EU mains)
+    [300, 5.0],     # 300V RMS
+    [400, 6.3],     # 400V RMS
+    [600, 9.0],     # 600V RMS
+    [800, 12.0],    # 800V RMS
+    [1000, 16.0],   # 1000V RMS
+]
+
+# ----------------------------------------------------------------------
+# Material Group IIIa (CTI 175-399) - Lower grade materials
+# ----------------------------------------------------------------------
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 1"
+note = "Clean environment, lower grade material"
+voltages = [
+    [12, 0.4],      # 12V RMS
+    [24, 0.5],      # 24V RMS
+    [50, 0.8],      # 50V RMS
+    [100, 1.25],    # 100V RMS
+    [150, 1.8],     # 150V RMS
+    [230, 2.5],     # 230V RMS (EU mains)
+    [300, 3.2],     # 300V RMS
+    [400, 4.0],     # 400V RMS
+    [600, 5.6],     # 600V RMS
+    [800, 7.5],     # 800V RMS
+    [1000, 10.0],   # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 2"
+note = "Typical environment, lower grade material"
+voltages = [
+    [12, 0.63],     # 12V RMS
+    [24, 0.8],      # 24V RMS
+    [50, 1.25],     # 50V RMS
+    [100, 2.0],     # 100V RMS
+    [150, 2.8],     # 150V RMS
+    [230, 4.0],     # 230V RMS (EU mains)
+    [300, 5.0],     # 300V RMS
+    [400, 6.3],     # 400V RMS
+    [600, 9.0],     # 600V RMS
+    [800, 12.0],    # 800V RMS
+    [1000, 16.0],   # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 3"
+note = "Harsh environment, lower grade material"
+voltages = [
+    [12, 1.0],      # 12V RMS
+    [24, 1.25],     # 24V RMS
+    [50, 2.0],      # 50V RMS
+    [100, 3.2],     # 100V RMS
+    [150, 4.5],     # 150V RMS
+    [230, 6.3],     # 230V RMS (EU mains)
+    [300, 8.0],     # 300V RMS
+    [400, 10.0],    # 400V RMS
+    [600, 14.0],    # 600V RMS
+    [800, 19.0],    # 800V RMS
+    [1000, 25.0],   # 1000V RMS
+]
+
+# ----------------------------------------------------------------------
+# Material Group IIIb (CTI 100-174) - Poor insulation (avoid if possible)
+# ----------------------------------------------------------------------
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 1"
+note = "Clean environment, poor material (NOT RECOMMENDED)"
+voltages = [
+    [12, 0.63],     # 12V RMS
+    [24, 0.8],      # 24V RMS
+    [50, 1.25],     # 50V RMS
+    [100, 2.0],     # 100V RMS
+    [150, 2.8],     # 150V RMS
+    [230, 4.0],     # 230V RMS (EU mains)
+    [300, 5.0],     # 300V RMS
+    [400, 6.3],     # 400V RMS
+    [600, 9.0],     # 600V RMS
+    [800, 12.0],    # 800V RMS
+    [1000, 16.0],   # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 2"
+note = "Typical environment, poor material (NOT RECOMMENDED)"
+voltages = [
+    [12, 1.0],      # 12V RMS
+    [24, 1.25],     # 24V RMS
+    [50, 2.0],      # 50V RMS
+    [100, 3.2],     # 100V RMS
+    [150, 4.5],     # 150V RMS
+    [230, 6.3],     # 230V RMS (EU mains)
+    [300, 8.0],     # 300V RMS
+    [400, 10.0],    # 400V RMS
+    [600, 14.0],    # 600V RMS
+    [800, 19.0],    # 800V RMS
+    [1000, 25.0],   # 1000V RMS
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 3"
+note = "Harsh environment, poor material (NOT RECOMMENDED)"
+voltages = [
+    [12, 1.6],      # 12V RMS
+    [24, 2.0],      # 24V RMS
+    [50, 3.2],      # 50V RMS
+    [100, 5.0],     # 100V RMS
+    [150, 7.1],     # 150V RMS
+    [230, 10.0],    # 230V RMS (EU mains)
+    [300, 12.5],    # 300V RMS
+    [400, 16.0],    # 400V RMS
+    [600, 22.0],    # 600V RMS
+    [800, 30.0],    # 800V RMS
+    [1000, 40.0],   # 1000V RMS
+]
+
 # ======================================================================
 # IPC2221 CLEARANCE/CREEPAGE TABLES (Alternative Standard)
 # ======================================================================
 
-# IPC2221 Table 6-1: Conductor Spacing (External layers)
-# More conservative than IEC60664-1 for some voltages
+# IPC2221 does not differentiate between clearance and creepage
+# The spacing values apply to both air gap (clearance) and surface path (creepage)
+# Values are more conservative than IEC60664-1 for some voltage ranges
+# Based on IPC2221 Table 6-1: Conductor Spacing
+
+# IPC2221 Table 6-1: External Layers (B1-B6) - Uncoated
+# Use these values when PCB is not conformally coated
 [[clearance_creepage.ipc2221_spacing_table]]
 layer_type = "External (B1-B6)"
 condition = "Uncoated"
+note = "For uncoated external layers, applies to both clearance and creepage"
 voltages = [
-    [0, 0.13],      # 0-15V DC
+    [0, 0.13],      # 0-15V DC (5 mil minimum fab capability)
     [30, 0.13],     # 16-30V DC
-    [50, 0.13],     # 31-50V DC
-    [100, 0.25],    # 51-100V DC
+    [50, 0.13],     # 31-50V DC (SELV range)
+    [100, 0.25],    # 51-100V DC (10 mil)
     [150, 0.4],     # 101-150V DC
-    [170, 0.5],     # 151-170V DC
-    [250, 0.8],     # 171-250V DC
+    [170, 0.5],     # 151-170V DC (20 mil)
+    [250, 0.8],     # 171-250V DC (mains range)
     [300, 0.8],     # 251-300V DC
-    [500, 1.5],     # 301-500V DC
+    [500, 1.5],     # 301-500V DC (60 mil)
 ]
 
+# IPC2221 Table 6-1: External Layers (B1-B6) - Coated
+# Conformal coating allows reduced spacing
+[[clearance_creepage.ipc2221_spacing_table]]
+layer_type = "External (B1-B6)"
+condition = "Coated (Conformal)"
+note = "For conformally coated external layers, reduced spacing allowed"
+voltages = [
+    [0, 0.13],      # 0-15V DC (5 mil - no reduction)
+    [30, 0.13],     # 16-30V DC
+    [50, 0.13],     # 31-50V DC (SELV range)
+    [100, 0.13],    # 51-100V DC (coating provides insulation)
+    [150, 0.13],    # 101-150V DC
+    [170, 0.13],    # 151-170V DC
+    [250, 0.4],     # 171-250V DC (mains range)
+    [300, 0.4],     # 251-300V DC
+    [500, 0.8],     # 301-500V DC
+]
+
+# IPC2221 Table 6-1: Internal Layers (B2-B4) - Embedded in substrate
+# Internal layers inherently "coated" by PCB laminate
 [[clearance_creepage.ipc2221_spacing_table]]
 layer_type = "Internal (B2-B4)"
-condition = "Coated"
+condition = "Embedded"
+note = "For internal layers embedded in PCB substrate"
 voltages = [
-    [0, 0.1],       # 0-15V DC
+    [0, 0.1],       # 0-15V DC (4 mil)
     [30, 0.1],      # 16-30V DC
-    [50, 0.1],      # 31-50V DC
-    [100, 0.2],     # 51-100V DC
+    [50, 0.1],      # 31-50V DC (SELV range)
+    [100, 0.2],     # 51-100V DC (8 mil)
     [150, 0.32],    # 101-150V DC
     [170, 0.4],     # 151-170V DC
-    [250, 0.6],     # 171-250V DC
+    [250, 0.6],     # 171-250V DC (mains range)
     [300, 0.6],     # 251-300V DC
-    [500, 1.27],    # 301-500V DC
+    [500, 1.27],    # 301-500V DC (50 mil)
 ]
+
+# IPC2221 Table 6-2: AC Voltage Peak Conversion
+# For AC voltages, use peak voltage (RMS × 1.414) to look up spacing
+# Example: 230V AC RMS = 325V peak → use 300-500V range
+[[clearance_creepage.ipc2221_ac_conversion]]
+note = "AC voltage handling"
+conversion = "voltage_peak = voltage_rms × 1.414"
+example = "230V AC RMS = 325V peak → use 300-500V range from table"
 
 # ======================================================================
 # VOLTAGE DOMAIN DEFINITIONS
@@ -603,31 +918,6 @@ isolation_type = "basic"
 min_clearance_mm = 2.5  # IEC60664-1 basic insulation @ 230V
 min_creepage_mm = 3.2
 description = "Mains to Ground - Basic insulation"
-
-# ======================================================================
-# CHECKING PARAMETERS
-# ======================================================================
-
-# Check types enabled
-check_clearance = true       # Air gap distance (Phase 1: 2D pad-to-pad only)
-check_creepage = false       # Surface distance (NOT YET IMPLEMENTED)
-check_different_layers = false  # Check clearance between layers (NOT YET IMPLEMENTED)
-
-# Trace-to-trace minimum spacing (overrides if larger than standard)
-min_trace_spacing_mm = 0.2
-
-# Pad-to-pad minimum spacing
-min_pad_spacing_mm = 0.3
-
-# Safety margin multiplier (e.g., 1.2 = 20% safety margin)
-safety_margin_factor = 1.2
-
-# Report mode: "violations_only" or "all_distances"
-report_mode = "violations_only"
-
-# Violation message templates
-violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
-violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
 
 # ======================================================================
 # IMPLEMENTATION NOTES

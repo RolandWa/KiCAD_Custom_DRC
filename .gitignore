@@ -29,6 +29,7 @@ local_config.toml
 # Test files and temporary data
 test_*.kicad_pcb
 test_*.kicad_pro
+test_config.py
 *.bak
 *.tmp
 *.temp
