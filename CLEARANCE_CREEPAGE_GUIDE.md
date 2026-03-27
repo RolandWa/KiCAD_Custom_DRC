@@ -167,7 +167,7 @@ slots/cutouts that break the surface path. The algorithm uses a Dijkstra-based
 waypoint graph with bounding-box extremity waypoints placed at slot tips.
 
 ```python
-def calculate_creepage(pad_a, pad_b, board):
+def calculate_creepage(pad_a, pad_b, board, required_mm):
     """
     Calculate minimum surface distance along PCB.
     
@@ -178,6 +178,14 @@ def calculate_creepage(pad_a, pad_b, board):
     - Waypoints placed at bbox extremities with 0.1mm offset
     - Dijkstra finds guaranteed shortest path on waypoint graph
     """
+    
+    # 0. Early exit: straight-line ≥ required → guaranteed PASS
+    #    Per IEC 60664-1, slots can only INCREASE the surface path.
+    #    If the straight-line edge-to-edge distance already meets the
+    #    requirement, skip the expensive Dijkstra pathfinder.
+    straight_line = edge_distance(pad_a, pad_b)
+    if straight_line >= required_mm:
+        return straight_line  # No slot analysis needed
     
     # 1. Separate slot barriers into board outline vs internal slots
     edge_cuts = [obs for obs in obstacles if layer == 'Edge.Cuts']
@@ -335,6 +343,25 @@ The creepage pathfinder routes around physical slots/cutouts that break the PCB
 surface. Only slots are barriers — pads, traces, and zones are surface features
 the creepage path travels along (not around).
 
+#### Step 0: Straight-Line Early Exit (IEC 60664-1 Optimisation)
+
+Per IEC 60664-1, creepage is the shortest path along the insulating surface.
+Slots and cutouts can only **increase** the surface path (they force detours
+around them). Therefore, if the straight-line edge-to-edge distance between
+two pads already meets the required creepage, the actual surface path is
+guaranteed to be ≥ required — no Dijkstra calculation is needed.
+
+```
+straight_line = edge_to_edge_distance(pad_a, pad_b)
+if straight_line ≥ required_creepage:
+    → PASS (skip slot analysis entirely)
+else:
+    → proceed to Step 1 (slots may extend path enough to pass)
+```
+
+This avoids the O(N²) visibility graph construction and Dijkstra execution
+for pad pairs that trivially pass.
+
 #### Step 1: Slot Barrier Separation
 
 Slot barriers are separated into two categories:
@@ -386,6 +413,7 @@ Weight = Euclidean distance
 - Standard Dijkstra with priority queue finds guaranteed shortest path
 
 **Typical performance:** 522 nodes, ~22K edges, ~136K visibility checks
+(only reached when Step 0 straight-line check fails)
 
 #### Step 4: Fallback (Fast A*)
 

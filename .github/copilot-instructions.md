@@ -6,7 +6,7 @@
 
 | Item | Value |
 |------|-------|
-| Entry point | `emc_auditor_plugin.py` (main orchestrator, ~900 lines) |
+| Entry point | `emc_auditor_plugin.py` (main orchestrator, ~960 lines) |
 | Config file | `emc_rules.toml` (TOML, all rules externally configurable) |
 | Deploy script | `sync_to_kicad.ps1` (copy from `.template`, gitignored) |
 | KiCad API | `pcbnew` module (KiCad's Python scripting API) |
@@ -25,7 +25,7 @@ python -m py_compile emc_auditor_plugin.py
 # Baseline: 40 violations (via:0, decoupling:9, ground:4, emi:22, clearance:4, signal:1)
 ```
 
-There is no automated test suite yet. Validation is manual against the baseline board.
+No automated test suite yet. Validation is manual against the baseline board.
 
 ## Architecture
 
@@ -42,25 +42,65 @@ emc_auditor_plugin.py          ← Orchestrator: loads config, runs checkers, sh
 └── emc_rules.toml             ← All thresholds and enable/disable flags
 ```
 
-**Each checker follows a standard interface** — see `.copilot-instructions.md` for the full template:
+### Checker Interface Template
 
-- Constructor: `__init__(board, marker_layer, config, report_lines, verbose, auditor)`
-- Entry point: `check(draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func) → int`
-- Utilities are **injected**, never reimplemented. No `log()` method in modules. No manual `PCB_GROUP()` creation.
+Every checker module must follow this pattern. Utilities are **injected** via `check()` parameters — never reimplemented.
+
+```python
+class NewChecker:
+    """One-line description of what this checker verifies."""
+
+    def __init__(self, board: pcbnew.BOARD, marker_layer: int,
+                 config: dict, report_lines: list, verbose: bool,
+                 auditor) -> None:
+        self.board = board
+        self.marker_layer = marker_layer
+        self.config = config
+        self.report_lines = report_lines
+        self.verbose = verbose
+        self.auditor = auditor
+
+    def check(self, draw_marker_func, draw_arrow_func,
+              get_distance_func, log_func, create_group_func) -> int:
+        """Run check and return violation count."""
+        log = log_func
+        violations = 0
+        # ... perform check, draw markers via injected functions ...
+        return violations
+```
+
+### Five Injected Utilities
+
+| Function | Purpose |
+|----------|---------|
+| `draw_marker_func(board, pos, msg, layer, group)` | Draw circle + text at violation |
+| `draw_arrow_func(board, start, end, label, layer, group)` | Draw directional arrow |
+| `get_distance_func(p1, p2) → float` | Euclidean distance (internal units) |
+| `log_func(msg, force)` | Centralized verbose logging |
+| `create_group_func(board, type, id, num) → PCB_GROUP` | Named group: `EMC_<Type>_<id>_<n>` |
 
 ## Key Conventions
 
-- **Type hints** on all public methods; **docstrings** (Google style with Args/Returns) required.
-- **f-strings** only — no `.format()` or `%`.
-- **Early returns** to reduce nesting; **list comprehensions** over manual loops.
-- **Private methods** use `_leading_underscore`.
-- **Constants** are `UPPER_CASE` at module level.
-- **Config access**: `self.config.get('key', default)` — always provide defaults.
-- **Unit conversions**: always use `pcbnew.FromMM()` / `pcbnew.ToMM()` — never raw integers.
-- **Violation markers**: create a named `EMC_<CheckType>_<id>_<n>` group, draw circle + optional arrow.
-- **Error handling**: wrap each checker's `check()` in try/except, fail gracefully with `return 0`.
-- **Module size**: 150–700 lines. Extract if larger.
-- **Line length**: ≤ 100 chars. Function length: ≤ 50 lines.
+| Area | Rule |
+|------|------|
+| Type hints | Mandatory on all public methods |
+| Docstrings | Google style with Args/Returns |
+| Strings | f-strings only — no `.format()` or `%` |
+| Flow | Early returns; list comprehensions over manual loops |
+| Naming | `_private_method`, `UPPER_CASE` constants |
+| Config | `self.config.get('key', default)` — always provide defaults |
+| Units | Always `pcbnew.FromMM()` / `pcbnew.ToMM()` — never raw integers |
+| Markers | Named group `EMC_<CheckType>_<id>_<n>`, circle + optional arrow |
+| Errors | Wrap each checker's `check()` in try/except, fail gracefully with `return 0` |
+| Size | Module: 150–700 lines. Function: ≤ 50 lines. Line: ≤ 100 chars |
+
+## Anti-Patterns
+
+- **Do NOT** define a `log()` method inside checker modules — use the injected `log_func`
+- **Do NOT** create `PCB_GROUP()` manually — use `create_group_func`
+- **Do NOT** use raw integers for coordinates — always convert via `pcbnew.FromMM()`/`pcbnew.ToMM()`
+- **Do NOT** hardcode thresholds — read from `self.config` with defaults
+- **Do NOT** import `wx` in checker modules — only the main plugin uses GUI
 
 ## Security — Pre-Commit Mandatory
 
@@ -72,15 +112,16 @@ git diff --cached | Select-String -Pattern "C:\\Users\\[^<]|OneDrive - "
 git status --ignored | Select-String -Pattern "sync_to_kicad.ps1|test_config.py"
 ```
 
-## Manufacturer DRU Files
-
-`JLCPCB/` and `PCBWAY/` contain KiCad Design Rule (`.kicad_dru`) presets for those fabricators. They are standalone — not used by the plugin.
-
 ## Detailed Guides
 
-For full code templates, anti-patterns, and examples, see:
-- [.copilot-instructions.md](../.copilot-instructions.md) — complete AI development guide with checker template, anti-patterns, and violation marker patterns
-- [README.md](../README.md) — feature list, installation, changelog
-- [CLEARANCE_CREEPAGE_GUIDE.md](../CLEARANCE_CREEPAGE_GUIDE.md) — IEC60664-1 tables and domain configuration
-- [IMPEDANCE_ALGORITHM.md](../IMPEDANCE_ALGORITHM.md) — controlled impedance calculation details
-- [VIA_STITCHING.md](../VIA_STITCHING.md), [GROUND_PLANE.md](../GROUND_PLANE.md), [TRACE_WIDTH.md](../TRACE_WIDTH.md), [DECOUPLING.md](../DECOUPLING.md) — per-rule documentation
+| Topic | File |
+|-------|------|
+| Feature list, installation, changelog | [README.md](../README.md) |
+| IEC60664-1 tables and domain configuration | [CLEARANCE_CREEPAGE_GUIDE.md](../CLEARANCE_CREEPAGE_GUIDE.md) |
+| Controlled impedance calculation | [IMPEDANCE_ALGORITHM.md](../IMPEDANCE_ALGORITHM.md) |
+| Via stitching rule | [VIA_STITCHING.md](../VIA_STITCHING.md) |
+| Ground plane continuity | [GROUND_PLANE.md](../GROUND_PLANE.md) |
+| Power trace width | [TRACE_WIDTH.md](../TRACE_WIDTH.md) |
+| Decoupling capacitor proximity | [DECOUPLING.md](../DECOUPLING.md) |
+| Clearance quick reference | [CLEARANCE_QUICK_REF.md](../CLEARANCE_QUICK_REF.md) |
+| Manufacturer DRU presets | [JLCPCB/](../JLCPCB/), [PCBWAY/](../PCBWAY/) (standalone, not used by plugin) |

@@ -13,6 +13,7 @@ The EMC Auditor plugin automatically checks your PCB design for electromagnetic 
 ### ⚡ Clearance & Creepage Checking (IMPLEMENTED)
 - **Full IEC60664-1 compliance** - Electrical safety verification for mains-powered equipment
 - **Hybrid pathfinding algorithm**:
+  - **Straight-line early exit** — if edge-to-edge distance ≥ required, skip pathfinding (slots only add length per IEC 60664-1)
   - **Visibility graph + Dijkstra** for <100 obstacles (optimal shortest path)
   - **Fast A* algorithm** for dense boards (≥100 obstacles, handles up to 500 obstacles)
   - **Spatial indexing** (grid-based) dramatically reduces obstacle queries from O(N) to O(1)

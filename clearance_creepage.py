@@ -156,7 +156,7 @@ class ClearanceCreepageChecker:
         
         # Performance limits
         self.max_obstacles = self.config.get('max_obstacles', 500)  # Maximum obstacles per layer for creepage pathfinding
-        self.obstacle_search_margin_mm = self.config.get('obstacle_search_margin_mm', 20.0)  # Spatial filtering margin
+        self.obstacle_search_margin_mm = self.config.get('obstacle_search_margin_mm', 12.0)  # Spatial filtering margin
     
     def check(self, draw_marker_func, draw_arrow_func, get_distance_func, log_func, create_group_func):
         """
@@ -183,7 +183,7 @@ class ClearanceCreepageChecker:
         
         self.log("\n=== CLEARANCE & CREEPAGE CHECK START ===", force=True)
         check_clearance_enabled = self.config.get('check_clearance', True)
-        check_creepage_enabled = self.config.get('check_creepage', False)
+        check_creepage_enabled = self.config.get('check_creepage', True)
         self.report_mode = self.config.get('report_mode', 'violations_only')
         modes = []
         if check_clearance_enabled:
@@ -297,6 +297,12 @@ class ClearanceCreepageChecker:
                     pads_a = [f[1] for f in features_a]  # Extract PAD objects from feature tuples (index 1)
                     pads_b = [f[1] for f in features_b]
                     
+                    # Pre-compute required creepage so pathfinder can skip
+                    # expensive Dijkstra when straight-line already passes
+                    required_creepage_mm = self._lookup_required_creepage(
+                        domain_a, domain_b, voltage_a, voltage_b, reinforced_a, reinforced_b
+                    )
+                    
                     # Check creepage on each copper layer
                     checked_layers = set()
                     for pad in pads_a + pads_b:
@@ -311,7 +317,8 @@ class ClearanceCreepageChecker:
                             
                             # Calculate creepage on this layer
                             creepage_result = self._calculate_creepage(
-                                domain_a, domain_b, pads_a, pads_b, layer
+                                domain_a, domain_b, pads_a, pads_b, layer,
+                                required_creepage_mm=required_creepage_mm
                             )
                             
                             if creepage_result:
@@ -321,11 +328,6 @@ class ClearanceCreepageChecker:
                                     self.log(f"      No valid creepage path (slot/cutout breaks path)")
                                     self.creepage_stats['layers_no_path'].append((domain_a, domain_b, layer_name))
                                     continue
-                                
-                                # Lookup required creepage
-                                required_creepage_mm = self._lookup_required_creepage(
-                                    domain_a, domain_b, voltage_a, voltage_b, reinforced_a, reinforced_b
-                                )
                                 
                                 self.log(f"      Actual: {actual_creepage_mm:.2f}mm, Required: {required_creepage_mm:.2f}mm")
                                 
@@ -487,7 +489,7 @@ class ClearanceCreepageChecker:
         #   list_all_nets = false → show only nets assigned to a domain
         list_all = self.config.get('list_all_nets', False)
         show_inventory = bool(failed_domains) or list_all
-        if show_inventory or domain_map:
+        if show_inventory:
             self.log(f"\n--- Board Net Inventory (configuration reference) ---")
             if failed_domains:
                 self.log(f"  The following domain(s) found no nets: {', '.join(failed_domains)}")
@@ -592,7 +594,7 @@ class ClearanceCreepageChecker:
         """Print summary of creepage checking results and statistics"""
         self.log(f"\n--- Creepage Checking Summary ---")
         
-        if not self.config.get('check_creepage', False):
+        if not self.config.get('check_creepage', True):
             self.log("ℹ️  Creepage checking is disabled (check_creepage = false)")
             return
         
@@ -911,13 +913,13 @@ class ClearanceCreepageChecker:
         
         return (distance_mm, closest_point_a, closest_point_b, closest_net_a, closest_net_b, closest_layer_a, closest_layer_b)
     
-    def _calculate_creepage(self, domain_a, domain_b, pads_a, pads_b, layer):
+    def _calculate_creepage(self, domain_a, domain_b, pads_a, pads_b, layer,
+                             required_creepage_mm=None):
         """
         Calculate minimum surface path (creepage) between two domains.
         
-        Uses A* pathfinding to find shortest path along PCB surface that:
-        - Avoids crossing copper from other nets (obstacles)
-        - Does not cross board edge or slots (infinite creepage)
+        Uses Dijkstra pathfinding to find shortest path along PCB surface that:
+        - Avoids crossing board edge or slots (infinite creepage)
         - Follows PCB surface on specified layer
         
         Args:
@@ -926,6 +928,9 @@ class ClearanceCreepageChecker:
             pads_a: list of pcbnew.PAD, pads in domain A
             pads_b: list of pcbnew.PAD, pads in domain B
             layer: pcbnew layer ID to check on
+            required_creepage_mm: float or None, required distance for early-exit
+                optimisation — if straight-line edge-to-edge ≥ required, skip
+                Dijkstra (slots can only increase the surface path per IEC 60664-1)
         
         Returns:
             tuple: (distance_mm, path_nodes, start_pad, end_pad) or (float('inf'), None, None, None) if no path
@@ -986,13 +991,14 @@ class ClearanceCreepageChecker:
         for idx, (approx_dist, pad_a, pad_b) in enumerate(pairs_to_check):
             self.log(f"      Pair {idx+1}/{len(pairs_to_check)}: approx {pcbnew.ToMM(approx_dist):.2f}mm")
             
-            # A* pathfinding from pad_a edge to pad_b edge
+            # Pathfinding from pad_a edge to pad_b edge
             path = self._astar_surface_path(
                 start_pad=pad_a,
                 goal_pad=pad_b,
                 obstacles=obstacles,
                 layer=layer,
-                max_iterations=max_iterations
+                max_iterations=max_iterations,
+                required_creepage_mm=required_creepage_mm
             )
             
             if path and path['length'] < min_creepage:
@@ -1194,32 +1200,23 @@ class ClearanceCreepageChecker:
         material_group = self.standard_params.get('material_group', 'II')
         pollution_degree = self.standard_params.get('pollution_degree', 2)
         
-        # Find matching table
-        selected_table = None
+        # Find all matching tables and merge voltages (supports HV extension tables)
+        all_matching_voltages = []
         for table in creepage_tables:
             table_material = table.get('material', '')
             table_pollution = table.get('pollution', '')
             
             # Match by material group and pollution degree
             if material_group in table_material and str(pollution_degree) in table_pollution:
-                selected_table = table
-                break
+                all_matching_voltages.extend(table.get('voltages', []))
         
-        if not selected_table:
-            # Fallback: use first table or clearance table
+        if not all_matching_voltages:
+            # Fallback: use clearance table with safety factor
             self.log(f"    ⚠️  No matching creepage table for Material Group {material_group}, PD{pollution_degree}")
-            # Use clearance as conservative fallback (creepage typically > clearance)
             return self._interpolate_clearance_table(voltage_rms) * 1.5  # 1.5× safety factor
         
-        # Get voltage list from selected table
-        voltages = selected_table.get('voltages', [])
-        
-        if not voltages:
-            # Fallback
-            return self._interpolate_clearance_table(voltage_rms) * 1.5
-        
-        # Sort by voltage
-        voltages.sort(key=lambda x: x[0])
+        # Merge and sort by voltage
+        voltages = sorted(all_matching_voltages, key=lambda x: x[0])
         
         # Handle 0V case
         if voltage_rms <= 0:
@@ -1229,9 +1226,36 @@ class ClearanceCreepageChecker:
         if voltage_rms <= voltages[0][0]:
             return voltages[0][1]
         
-        # If voltage above highest table entry
+        # If voltage above highest table entry — clamp and warn
         if voltage_rms >= voltages[-1][0]:
-            return voltages[-1][1]
+            max_v = voltages[-1][0]
+            max_d = voltages[-1][1]
+            if voltage_rms > max_v:
+                self.log(
+                    f"    ⚠️  WARNING: Voltage {voltage_rms:.0f}V exceeds creepage "
+                    f"table maximum ({max_v:.0f}V). Using {max_d:.2f}mm "
+                    f"(table max). IEC 60664-1 tables only cover up to "
+                    f"{max_v:.0f}V — for higher voltages consult:",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 60815  (creepage for polluted HV environments)",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 60071-1 (insulation coordination, withstand voltages)",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 61936-1 (power installations >1 kV AC clearances)",
+                    force=True,
+                )
+                self.log(
+                    f"       ➜ Consider potting compound or conformal/insulation "
+                    f"coating to reduce required creepage distances.",
+                    force=True,
+                )
+            return max_d
         
         # Linear interpolation
         for i in range(len(voltages) - 1):
@@ -1283,9 +1307,32 @@ class ClearanceCreepageChecker:
         if voltage_rms <= all_voltages[0][0]:
             return all_voltages[0][1]
         
-        # If voltage above highest table entry, use highest value
+        # If voltage above highest table entry — clamp and warn
         if voltage_rms >= all_voltages[-1][0]:
-            return all_voltages[-1][1]
+            max_v = all_voltages[-1][0]
+            max_d = all_voltages[-1][1]
+            if voltage_rms > max_v:
+                self.log(
+                    f"    ⚠️  WARNING: Voltage {voltage_rms:.0f}V exceeds clearance "
+                    f"table maximum ({max_v:.0f}V). Using {max_d:.2f}mm "
+                    f"(table max). IEC 60664-1 tables only cover up to "
+                    f"{max_v:.0f}V — for higher voltages consult:",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 60071-1 (insulation coordination, withstand voltages)",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 61936-1 (power installations >1 kV AC clearances)",
+                    force=True,
+                )
+                self.log(
+                    f"       ➜ Consider potting compound or conformal/insulation "
+                    f"coating to reduce required clearance distances.",
+                    force=True,
+                )
+            return max_d
         
         # Linear interpolation between table entries
         for i in range(len(all_voltages) - 1):
@@ -1367,7 +1414,30 @@ class ClearanceCreepageChecker:
         if voltage_rms <= voltages[0][0]:
             return voltages[0][1]
         if voltage_rms >= voltages[-1][0]:
-            return voltages[-1][1]
+            max_v = voltages[-1][0]
+            max_d = voltages[-1][1]
+            if voltage_rms > max_v:
+                self.log(
+                    f"    ⚠️  WARNING: Voltage {voltage_rms:.0f}V exceeds IPC2221 "
+                    f"table maximum ({max_v:.0f}V). Using {max_d:.2f}mm "
+                    f"(table max). IPC2221 tables only cover up to "
+                    f"{max_v:.0f}V — for higher voltages consult:",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 60071-1 (insulation coordination, withstand voltages)",
+                    force=True,
+                )
+                self.log(
+                    f"       • IEC 61936-1 (power installations >1 kV AC clearances)",
+                    force=True,
+                )
+                self.log(
+                    f"       ➜ Consider potting compound or conformal/insulation "
+                    f"coating to reduce required distances.",
+                    force=True,
+                )
+            return max_d
 
         for i in range(len(voltages) - 1):
             v_low, d_low = voltages[i]
@@ -2507,19 +2577,28 @@ class ClearanceCreepageChecker:
         memo[memo_key] = best_result
         return best_result
 
-    def _visibility_graph_path(self, start_pad, goal_pad, obstacles, layer):
+    def _visibility_graph_path(self, start_pad, goal_pad, obstacles, layer,
+                                required_creepage_mm=None):
         """
-        Find shortest surface path using a recursive slot-detour algorithm.
+        Find shortest surface path using a visibility-graph + Dijkstra algorithm.
 
         For creepage, only physical slots/cutouts are barriers that the surface
         path must go around.  Pads, zones, and other copper features are on the
         board surface — the creepage path travels along them, not around them.
 
         Strategy:
+        0. Early exit — straight-line ≥ required → PASS (slots only add length).
         1. Direct line — if no slot blocks it, return straight distance.
-        2. Recursive slot detour — identify the blocking slot, try waypoints
-           around its tips, recursively solve each sub-leg.
-        3. Full visibility-graph + Dijkstra fallback (rare, complex geometry).
+        2. Full visibility-graph + Dijkstra for slot detour.
+
+        Args:
+            start_pad: pcbnew.PAD
+            goal_pad: pcbnew.PAD
+            obstacles: list of obstacle dicts
+            layer: pcbnew layer ID
+            required_creepage_mm: float or None, if provided enables early-exit
+                when straight-line distance already meets the requirement
+                (per IEC 60664-1, slots can only increase the surface path)
 
         Returns:
             dict: {'length': float (mm), 'nodes': [VECTOR2I, ...]} or None
@@ -2527,6 +2606,21 @@ class ClearanceCreepageChecker:
         # IEC 60664-1: measure from conductive EDGE, not pad centre
         start = self._get_pad_edge_point(start_pad, goal_pad.GetPosition(), layer)
         goal  = self._get_pad_edge_point(goal_pad,  start_pad.GetPosition(), layer)
+
+        # ------------------------------------------------------------------
+        # STEP 0: Early exit — straight-line distance ≥ required creepage
+        # Per IEC 60664-1, creepage is measured along the insulating surface.
+        # Slots/cutouts can only INCREASE the surface path (force detours).
+        # Therefore if the straight-line edge-to-edge distance already meets
+        # the requirement, the actual creepage is guaranteed to pass — no
+        # need to run the expensive Dijkstra pathfinder.
+        # ------------------------------------------------------------------
+        straight_line_mm = pcbnew.ToMM(self.get_distance(start, goal))
+        if required_creepage_mm is not None and straight_line_mm >= required_creepage_mm:
+            self.log(f"        Straight-line edge-to-edge: {straight_line_mm:.2f}mm "
+                     f"≥ required {required_creepage_mm:.2f}mm")
+            self.log(f"        → Skipping slot analysis (slots can only increase path)")
+            return {'length': straight_line_mm, 'nodes': [start, goal]}
 
         # ------------------------------------------------------------------
         # Extract slot-only obstacles (the only real barriers for creepage)
@@ -2837,7 +2931,8 @@ class ClearanceCreepageChecker:
         
         return neighbors
     
-    def _astar_surface_path(self, start_pad, goal_pad, obstacles, layer, max_iterations=10000):
+    def _astar_surface_path(self, start_pad, goal_pad, obstacles, layer,
+                             max_iterations=10000, required_creepage_mm=None):
         """
         DEPRECATED: Old A* pathfinding algorithm (kept for reference).
         Now using _visibility_graph_path() instead for 100× better performance.
@@ -2848,12 +2943,16 @@ class ClearanceCreepageChecker:
             obstacles: list of obstacle dicts
             layer: pcbnew layer ID
             max_iterations: int, maximum A* iterations
+            required_creepage_mm: float or None, for early-exit optimisation
         
         Returns:
             dict: {'length': float (mm), 'nodes': [VECTOR2I, ...]} or None if no path
         """
         # Redirect to new visibility graph implementation
-        return self._visibility_graph_path(start_pad, goal_pad, obstacles, layer)
+        return self._visibility_graph_path(
+            start_pad, goal_pad, obstacles, layer,
+            required_creepage_mm=required_creepage_mm
+        )
     
     def _astar_surface_path_old(self, start_pad, goal_pad,obstacles, layer, max_iterations=10000):
         """

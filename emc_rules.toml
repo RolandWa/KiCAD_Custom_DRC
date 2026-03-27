@@ -314,8 +314,6 @@ draw_creepage_path = true
 violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
 violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
 
-min_trace_spacing_mm = 0.2  # Trace-to-trace minimum
-min_pad_spacing_mm = 0.3  # Pad-to-pad minimum
 safety_margin_factor = 1.2  # Safety multiplier (1.2 = 20% margin)
 report_mode = "violations_only"  # or "all_distances"
 
@@ -373,6 +371,60 @@ voltages = [
     [600.0, 5.5],   # 600V RMS
     [800.0, 8.0],   # 800V RMS
     [1000.0, 10.0], # 1000V RMS
+]
+
+# ----------------------------------------------------------------------
+# IEC 60664-1 EXTENDED: Very High Voltage (>1 kV)
+# Extrapolated from IEC 60664-1 clearance progression.
+# WARNING: IEC 60664-1 only covers up to 1000V RMS. Values above 1000V
+# are conservative extrapolations. For voltages >1 kV always verify per:
+#   - IEC 60071-1 (insulation coordination)
+#   - IEC 61936-1 (power installations >1 kV AC)
+# Consider potting compound or conformal/insulation coating.
+# ----------------------------------------------------------------------
+[[clearance_creepage.iec60664_clearance_table]]
+voltage_class = "Very High Voltage (VHV) — IEC 60664-1 Extrapolated"
+note = "EXTRAPOLATED above 1kV — verify per IEC 60071-1 / IEC 61936-1. Use potting or insulation coating."
+voltages = [
+    [1500.0, 14.0],    # 1.5kV RMS (extrapolated)
+    [2000.0, 18.0],    # 2kV RMS (extrapolated)
+    [3000.0, 26.0],    # 3kV RMS (extrapolated)
+    [4000.0, 35.0],    # 4kV RMS (extrapolated)
+    [5000.0, 44.0],    # 5kV RMS (extrapolated)
+    [6000.0, 53.0],    # 6kV RMS (extrapolated)
+    [8000.0, 72.0],    # 8kV RMS (extrapolated)
+    [10000.0, 92.0],   # 10kV RMS (extrapolated)
+]
+
+# ======================================================================
+# IEC 61936-1 CLEARANCE TABLE — Power Installations >1 kV AC
+# ======================================================================
+# Reference values for minimum clearances in air (indoor installations).
+# Based on IEC 61936-1 Table 1 (phase-to-earth, standard insulation level).
+# These are for POWER INSTALLATION equipment (switchgear, busbars, etc.),
+# NOT directly for PCBs — included as a design reference upper bound.
+#
+# Um = highest voltage for equipment (RMS line-to-line)
+# For PCB applications at these voltages, potting/encapsulation is mandatory.
+# Conformal coating alone is insufficient above ~2 kV.
+#
+# Standard Reference:
+#   IEC 61936-1:2021 — Power installations exceeding 1 kV AC
+#   IEC 60071-1:2019 — Insulation coordination (withstand voltage levels)
+#   IEC 60815 series — Creepage distances for outdoor insulators (pollution)
+# ======================================================================
+[[clearance_creepage.iec61936_clearance_table]]
+standard = "IEC 61936-1"
+condition = "Indoor, phase-to-earth, standard insulation"
+note = "Power installation reference — NOT for bare PCB. Potting/encapsulation required at these voltages."
+voltages = [
+    [3600.0, 60.0],    # Um 3.6kV — rated lightning impulse 20/40 kV
+    [7200.0, 90.0],    # Um 7.2kV — rated lightning impulse 40/60 kV
+    [12000.0, 120.0],  # Um 12kV  — rated lightning impulse 60/75 kV
+    [24000.0, 220.0],  # Um 24kV  — rated lightning impulse 95/125 kV
+    [36000.0, 320.0],  # Um 36kV  — rated lightning impulse 145/170 kV
+    [52000.0, 480.0],  # Um 52kV  — rated lightning impulse 250 kV
+    [72500.0, 630.0],  # Um 72.5kV — rated lightning impulse 325 kV
 ]
 
 # ======================================================================
@@ -612,6 +664,187 @@ voltages = [
 ]
 
 # ======================================================================
+# IEC 60664-1 CREEPAGE — HV EXTENSIONS (>1 kV, Extrapolated)
+# ======================================================================
+# WARNING: IEC 60664-1 only covers up to 1000V RMS. The values below are
+# linearly extrapolated from the standard's progression. For voltages >1 kV
+# always verify per:
+#   - IEC 60815  (creepage for polluted HV environments / outdoor insulators)
+#   - IEC 60071-1 (insulation coordination, impulse withstand voltages)
+#   - IEC 61936-1 (power installations exceeding 1 kV AC)
+#
+# RECOMMENDATION: At voltages above ~1 kV on a PCB, bare-board creepage
+# distances become impractically large. Apply potting compound, conformal
+# coating, or insulation barrier to achieve safe isolation in a compact design.
+#
+# These extension tables are merged with the base tables above by the plugin.
+# ======================================================================
+
+# --- Material Group I (CTI ≥ 600) — HV extensions ---
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group I"
+pollution = "Pollution Degree 1"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 7.5],    # 1.5kV (extrapolated)
+    [2000.0, 10.0],   # 2kV (extrapolated)
+    [3000.0, 15.0],   # 3kV (extrapolated)
+    [5000.0, 25.0],   # 5kV (extrapolated)
+    [8000.0, 40.0],   # 8kV (extrapolated)
+    [10000.0, 50.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group I"
+pollution = "Pollution Degree 2"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 9.5],    # 1.5kV (extrapolated)
+    [2000.0, 12.6],   # 2kV (extrapolated)
+    [3000.0, 19.0],   # 3kV (extrapolated)
+    [5000.0, 32.0],   # 5kV (extrapolated)
+    [8000.0, 50.0],   # 8kV (extrapolated)
+    [10000.0, 63.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group I"
+pollution = "Pollution Degree 3"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 15.0],   # 1.5kV (extrapolated)
+    [2000.0, 20.0],   # 2kV (extrapolated)
+    [3000.0, 30.0],   # 3kV (extrapolated)
+    [5000.0, 50.0],   # 5kV (extrapolated)
+    [8000.0, 80.0],   # 8kV (extrapolated)
+    [10000.0, 100.0],  # 10kV (extrapolated)
+]
+
+# --- Material Group II (CTI 400-599, FR4) — HV extensions ---
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 1"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 9.5],    # 1.5kV (extrapolated)
+    [2000.0, 12.6],   # 2kV (extrapolated)
+    [3000.0, 19.0],   # 3kV (extrapolated)
+    [5000.0, 32.0],   # 5kV (extrapolated)
+    [8000.0, 50.0],   # 8kV (extrapolated)
+    [10000.0, 63.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 2"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 15.0],   # 1.5kV (extrapolated)
+    [2000.0, 20.0],   # 2kV (extrapolated)
+    [3000.0, 30.0],   # 3kV (extrapolated)
+    [5000.0, 50.0],   # 5kV (extrapolated)
+    [8000.0, 80.0],   # 8kV (extrapolated)
+    [10000.0, 100.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group II"
+pollution = "Pollution Degree 3"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 24.0],   # 1.5kV (extrapolated)
+    [2000.0, 32.0],   # 2kV (extrapolated)
+    [3000.0, 48.0],   # 3kV (extrapolated)
+    [5000.0, 80.0],   # 5kV (extrapolated)
+    [8000.0, 128.0],  # 8kV (extrapolated)
+    [10000.0, 160.0],  # 10kV (extrapolated)
+]
+
+# --- Material Group IIIa (CTI 175-399) — HV extensions ---
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 1"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 15.0],   # 1.5kV (extrapolated)
+    [2000.0, 20.0],   # 2kV (extrapolated)
+    [3000.0, 30.0],   # 3kV (extrapolated)
+    [5000.0, 50.0],   # 5kV (extrapolated)
+    [8000.0, 80.0],   # 8kV (extrapolated)
+    [10000.0, 100.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 2"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 24.0],   # 1.5kV (extrapolated)
+    [2000.0, 32.0],   # 2kV (extrapolated)
+    [3000.0, 48.0],   # 3kV (extrapolated)
+    [5000.0, 80.0],   # 5kV (extrapolated)
+    [8000.0, 128.0],  # 8kV (extrapolated)
+    [10000.0, 160.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIa"
+pollution = "Pollution Degree 3"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 37.5],   # 1.5kV (extrapolated)
+    [2000.0, 50.0],   # 2kV (extrapolated)
+    [3000.0, 75.0],   # 3kV (extrapolated)
+    [5000.0, 125.0],  # 5kV (extrapolated)
+    [8000.0, 200.0],  # 8kV (extrapolated)
+    [10000.0, 250.0],  # 10kV (extrapolated)
+]
+
+# --- Material Group IIIb (CTI 100-174) — HV extensions ---
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 1"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 24.0],   # 1.5kV (extrapolated)
+    [2000.0, 32.0],   # 2kV (extrapolated)
+    [3000.0, 48.0],   # 3kV (extrapolated)
+    [5000.0, 80.0],   # 5kV (extrapolated)
+    [8000.0, 128.0],  # 8kV (extrapolated)
+    [10000.0, 160.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 2"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 37.5],   # 1.5kV (extrapolated)
+    [2000.0, 50.0],   # 2kV (extrapolated)
+    [3000.0, 75.0],   # 3kV (extrapolated)
+    [5000.0, 125.0],  # 5kV (extrapolated)
+    [8000.0, 200.0],  # 8kV (extrapolated)
+    [10000.0, 250.0],  # 10kV (extrapolated)
+]
+
+[[clearance_creepage.iec60664_creepage_table]]
+material = "Material Group IIIb"
+pollution = "Pollution Degree 3"
+note = "HV extension (extrapolated). Verify per IEC 60815 / IEC 61936-1. Consider potting/insulation coating."
+voltages = [
+    [1500.0, 60.0],   # 1.5kV (extrapolated)
+    [2000.0, 80.0],   # 2kV (extrapolated)
+    [3000.0, 120.0],  # 3kV (extrapolated)
+    [5000.0, 200.0],  # 5kV (extrapolated)
+    [8000.0, 320.0],  # 8kV (extrapolated)
+    [10000.0, 400.0],  # 10kV (extrapolated)
+]
+
+# ======================================================================
 # IPC2221 CLEARANCE/CREEPAGE TABLES (Alternative Standard)
 # ======================================================================
 
@@ -705,7 +938,7 @@ net_patterns = ["AC_N", "MAINS_N", "N_MAINS", "NEUTRAL"]
 [[clearance_creepage.voltage_domains]]
 name = "HV_8kV"
 description = "High voltage DC bus (8000V)"
-voltage_rms = 80000
+voltage_rms = 8000
 net_patterns = ["8kV", "8000V"]
 requires_reinforced_insulation = false
 
