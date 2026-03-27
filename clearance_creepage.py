@@ -182,11 +182,21 @@ class ClearanceCreepageChecker:
         self.get_distance = get_distance_func
         
         self.log("\n=== CLEARANCE & CREEPAGE CHECK START ===", force=True)
+        check_clearance_enabled = self.config.get('check_clearance', True)
         check_creepage_enabled = self.config.get('check_creepage', False)
+        self.report_mode = self.config.get('report_mode', 'violations_only')
+        modes = []
+        if check_clearance_enabled:
+            modes.append("Clearance (air gap)")
         if check_creepage_enabled:
-            self.log("Phase 2: Clearance (air gap) + Creepage (surface path) checking", force=True)
+            modes.append("Creepage (surface path)")
+        if modes:
+            self.log(f"Checks enabled: {' + '.join(modes)}", force=True)
         else:
-            self.log("Phase 1: Clearance (air gap) only - creepage disabled", force=True)
+            self.log("⚠️  Both check_clearance and check_creepage are disabled", force=True)
+            return 0
+        if self.report_mode == 'all_distances':
+            self.log("Report mode: all_distances (reporting all pairs, not just violations)", force=True)
         
         # Step 1: Parse standard parameters from config
         self.standard_params = self._parse_standard_params()
@@ -211,8 +221,8 @@ class ClearanceCreepageChecker:
         for domain_name, features in features_by_domain.items():
             self.log(f"  {domain_name}: {len(features)} pad(s)")
         
-        # Step 5: Check clearance between all domain pairs
-        self.log("\n--- Checking Clearance Between Domains ---")
+        # Step 5: Check clearance and/or creepage between all domain pairs
+        self.log("\n--- Checking Between Domains ---")
         
         domain_names = list(features_by_domain.keys())
         pairs_checked = 0
@@ -232,43 +242,54 @@ class ClearanceCreepageChecker:
                     self.log("  ⚠️  Skipping (no features in one or both domains)")
                     continue
                 
-                # Log number of comparisons to help user understand performance
-                num_comparisons = len(features_a) * len(features_b)
-                self.log(f"  Comparing {len(features_a)} × {len(features_b)} = {num_comparisons} pad pair(s)")
-                
-                # Calculate minimum clearance
-                result = self._calculate_clearance(features_a, features_b)
-                if not result:
-                    self.log("  ⚠️  Could not calculate clearance")
-                    continue
-                
-                actual_mm, point1, point2, net_a, net_b, layer_a, layer_b = result
-                
                 # Get voltage and reinforced flags from first feature in each domain
                 voltage_a = features_a[0][4]  # voltage_rms from feature tuple
                 voltage_b = features_b[0][4]
                 reinforced_a = features_a[0][5]  # reinforced flag
                 reinforced_b = features_b[0][5]
                 
-                # Lookup required clearance with layer information
-                required_mm, isolation_type, description = self._lookup_required_clearance(
-                    domain_a, domain_b, voltage_a, voltage_b, reinforced_a, reinforced_b, layer_a, layer_b
-                )
+                # --- Clearance check (if enabled) ---
+                actual_mm = None
+                point1 = None
+                point2 = None
+                net_a = None
+                net_b = None
+                layer_a = None
+                layer_b = None
                 
-                self.log(f"  Actual: {actual_mm:.2f}mm, Required: {required_mm:.2f}mm ({isolation_type})")
-                self.log(f"  Nets: {net_a} ↔ {net_b}")
+                if check_clearance_enabled:
+                    # Log number of comparisons to help user understand performance
+                    num_comparisons = len(features_a) * len(features_b)
+                    self.log(f"  Comparing {len(features_a)} × {len(features_b)} = {num_comparisons} pad pair(s)")
+                    
+                    # Calculate minimum clearance
+                    result = self._calculate_clearance(features_a, features_b)
+                    if not result:
+                        self.log("  ⚠️  Could not calculate clearance")
+                    else:
+                        actual_mm, point1, point2, net_a, net_b, layer_a, layer_b = result
+                        
+                        # Lookup required clearance with layer information
+                        required_mm, isolation_type, description = self._lookup_required_clearance(
+                            domain_a, domain_b, voltage_a, voltage_b, reinforced_a, reinforced_b, layer_a, layer_b
+                        )
+                        
+                        self.log(f"  Actual: {actual_mm:.2f}mm, Required: {required_mm:.2f}mm ({isolation_type})")
+                        self.log(f"  Nets: {net_a} ↔ {net_b}")
+                        
+                        # Check for violation
+                        if actual_mm < required_mm:
+                            self._create_clearance_violation_marker(
+                                domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b, create_group_func
+                            )
+                            self.clearance_violations += 1
+                        else:
+                            self.log("  ✓ PASS (clearance)")
+                            if self.report_mode == 'all_distances':
+                                self.log(f"  ℹ️  {domain_a} ↔ {domain_b}: clearance {actual_mm:.2f}mm (req {required_mm:.2f}mm) — OK")
                 
-                # Check for violation
-                if actual_mm < required_mm:
-                    self._create_clearance_violation_marker(
-                        domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b, create_group_func
-                    )
-                    self.clearance_violations += 1
-                else:
-                    self.log("  ✓ PASS")
-                
-                # Step 6: Check creepage (if enabled)
-                if self.config.get('check_creepage', False):
+                # --- Creepage check (if enabled) ---
+                if check_creepage_enabled:
                     self.creepage_stats['pairs_checked'] += 1
                     self.log("\n  --- Checking Creepage (Surface Path) ---")
                     
@@ -321,7 +342,9 @@ class ClearanceCreepageChecker:
                                     )
                                     self.creepage_violations += 1
                                 else:
-                                    self.log(f"      ✓ PASS")
+                                    self.log(f"      ✓ PASS (creepage)")
+                                    if self.report_mode == 'all_distances':
+                                        self.log(f"      ℹ️  {domain_a} ↔ {domain_b} on {layer_name}: creepage {actual_creepage_mm:.2f}mm (req {required_creepage_mm:.2f}mm) — OK")
                                     if self.config.get('draw_creepage_path', False) and path and len(path) >= 2:
                                         self._draw_debug_creepage_path(
                                             domain_a, domain_b, actual_creepage_mm, required_creepage_mm,
@@ -331,12 +354,13 @@ class ClearanceCreepageChecker:
                                 self.log(f"      Could not calculate creepage")
         
         # Report creepage checking summary if enabled
-        if self.config.get('check_creepage', False):
+        if check_creepage_enabled:
             self._report_creepage_summary()
         
         self.log(f"\n=== CLEARANCE & CREEPAGE CHECK COMPLETE: {pairs_checked} pair(s) checked, {self.violation_count} violation(s) ===", force=True)
-        if self.config.get('check_creepage', False):
+        if check_clearance_enabled:
             self.log(f"    Clearance violations: {self.clearance_violations}")
+        if check_creepage_enabled:
             self.log(f"    Creepage violations: {self.creepage_violations}")
         return self.violation_count
     
@@ -1015,16 +1039,26 @@ class ClearanceCreepageChecker:
         
         # Step 2: Calculate from voltage difference and standard tables
         voltage_diff = abs(voltage_a - voltage_b)
+        configured_standard = self.standard_params.get('standard', 'IEC60664-1')
         
-        # Determine which standard/method to use based on voltage
+        # Determine which standard/method to use
         standard_used = ""
-        if voltage_diff < 12.0:
-            # IPC2221 functional spacing for sub-12V
-            clearance = self._interpolate_clearance_table(voltage_diff)
+        if configured_standard == 'IPC2221':
+            # User explicitly selected IPC2221 for all voltages
+            clearance = self._interpolate_ipc2221_clearance(
+                voltage_diff, layer_a, layer_b
+            )
+            standard_used = "IPC2221"
+            self.log(f"    → Using IPC2221 Table 6-1 (voltage {voltage_diff:.1f}V)")
+        elif voltage_diff < 12.0:
+            # Sub-12V: use IPC2221 functional spacing regardless of standard
+            clearance = self._interpolate_ipc2221_clearance(
+                voltage_diff, layer_a, layer_b
+            )
             standard_used = "IPC2221"
             self.log(f"    → Using IPC2221 functional spacing (voltage {voltage_diff:.1f}V < 12V)")
         else:
-            # IEC60664-1 safety spacing for ≥12V
+            # IEC60664-1 safety spacing for ≥12V (or BOTH)
             overvoltage_cat = self.standard_params.get('overvoltage_category', 'II')
             clearance = self._interpolate_clearance_table(voltage_diff)
             
@@ -1037,6 +1071,18 @@ class ClearanceCreepageChecker:
             
             standard_used = f"IEC60664-1 (OVC-{overvoltage_cat})"
             self.log(f"    → Using IEC60664-1 OVC-{overvoltage_cat} (voltage {voltage_diff:.1f}V ≥ 12V)")
+            
+            # BOTH mode: also check IPC2221 and use the stricter value
+            if configured_standard == 'BOTH':
+                ipc_clearance = self._interpolate_ipc2221_clearance(
+                    voltage_diff, layer_a, layer_b
+                )
+                if ipc_clearance > clearance:
+                    self.log(f"    → IPC2221 is stricter ({ipc_clearance:.3f}mm > {clearance:.3f}mm), using IPC2221")
+                    clearance = ipc_clearance
+                    standard_used = f"IPC2221 (stricter than IEC60664-1)"
+                else:
+                    self.log(f"    → IEC60664-1 is stricter, keeping ({clearance:.3f}mm vs IPC2221 {ipc_clearance:.3f}mm)")
         
         # Step 3: Apply reinforced insulation factor (2×)
         isolation_type = 'basic'
@@ -1255,6 +1301,83 @@ class ClearanceCreepageChecker:
         # Fallback: use minimum PCB fabrication capability
         return 0.13  # 0.13mm (5 mil) - IPC2221 minimum
     
+    def _interpolate_ipc2221_clearance(self, voltage_rms, layer_a=None, layer_b=None):
+        """
+        Interpolate clearance from IPC2221 spacing tables (Table 6-1).
+
+        Selects the appropriate sub-table based on layer type:
+        - Both external + uncoated → "External (B1-B6)" / "Uncoated"
+        - Both external + coated   → "External (B1-B6)" / "Coated"
+        - Both internal            → "Internal (B2-B4)" / "Embedded"
+        - Mixed / unknown          → external uncoated (conservative)
+
+        Falls back to iec60664_clearance_table if no IPC2221 tables are
+        defined in the TOML config.
+
+        Args:
+            voltage_rms: float, RMS voltage differential
+            layer_a: pcbnew layer ID (optional)
+            layer_b: pcbnew layer ID (optional)
+
+        Returns:
+            float: Required clearance in mm
+        """
+        ipc_tables = self.config.get('ipc2221_spacing_table', [])
+        if not ipc_tables:
+            # No IPC2221 tables configured — fall back to IEC60664
+            self.log("    ⚠️  No ipc2221_spacing_table in config, falling back to IEC60664 table")
+            return self._interpolate_clearance_table(voltage_rms)
+
+        # Determine desired table variant from layer info
+        if layer_a is not None and layer_b is not None:
+            ext_a = self._is_external_layer(layer_a)
+            ext_b = self._is_external_layer(layer_b)
+            if not ext_a and not ext_b:
+                desired_layer = "Internal"
+                desired_condition = "Embedded"
+            else:
+                desired_layer = "External"
+                desired_condition = "Uncoated"  # Conservative default
+        else:
+            desired_layer = "External"
+            desired_condition = "Uncoated"
+
+        # Find best matching table
+        selected_table = None
+        for table in ipc_tables:
+            layer_type = table.get('layer_type', '')
+            condition = table.get('condition', '')
+            if desired_layer in layer_type and desired_condition in condition:
+                selected_table = table
+                break
+
+        # Fallback: use first table if no exact match
+        if selected_table is None:
+            selected_table = ipc_tables[0]
+            self.log(f"    ⚠️  No IPC2221 table for {desired_layer}/{desired_condition}, using '{selected_table.get('layer_type', '?')}'")
+
+        voltages = selected_table.get('voltages', [])
+        if not voltages:
+            return self._interpolate_clearance_table(voltage_rms)
+
+        voltages = sorted(voltages, key=lambda x: x[0])
+
+        if voltage_rms <= 0:
+            return voltages[0][1]
+        if voltage_rms <= voltages[0][0]:
+            return voltages[0][1]
+        if voltage_rms >= voltages[-1][0]:
+            return voltages[-1][1]
+
+        for i in range(len(voltages) - 1):
+            v_low, d_low = voltages[i]
+            v_high, d_high = voltages[i + 1]
+            if v_low <= voltage_rms <= v_high:
+                ratio = (voltage_rms - v_low) / (v_high - v_low)
+                return d_low + ratio * (d_high - d_low)
+
+        return voltages[-1][1]
+    
     def _create_clearance_violation_marker(self, domain_a, domain_b, actual_mm, required_mm, point1, point2, net_a, net_b, create_group_func):
         """
         Draw violation marker for insufficient clearance.
@@ -1274,8 +1397,16 @@ class ClearanceCreepageChecker:
         self.violation_count += 1
         violation_group = create_group_func(self.board, "Clearance", f"{domain_a}_{domain_b}", self.violation_count)
         
-        # Format violation message
-        msg = f"CLEARANCE: {actual_mm:.2f}mm < {required_mm:.2f}mm\n{domain_a}-{domain_b}\n{net_a} ↔ {net_b}"
+        # Format violation message from template or default
+        template = self.config.get(
+            'violation_message_clearance',
+            'CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})'
+        )
+        msg_line1 = template.format(
+            actual=actual_mm, required=required_mm,
+            domainA=domain_a, domainB=domain_b
+        )
+        msg = f"{msg_line1}\n{net_a} ↔ {net_b}"
         
         # Draw marker at midpoint between violations
         midpoint_x = (point1.x + point2.x) // 2
@@ -2993,7 +3124,15 @@ class ClearanceCreepageChecker:
         # Format violation message
         start_net = start_pad.GetNetname()
         end_net = end_pad.GetNetname()
-        msg = f"CREEPAGE: {actual_mm:.2f}mm < {required_mm:.2f}mm\n{domain_a}-{domain_b}\n{start_net} ↔ {end_net}"
+        template = self.config.get(
+            'violation_message_creepage',
+            'CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})'
+        )
+        msg_line1 = template.format(
+            actual=actual_mm, required=required_mm,
+            domainA=domain_a, domainB=domain_b
+        )
+        msg = f"{msg_line1}\n{start_net} ↔ {end_net}"
         
         # Draw marker at path midpoint
         if path and len(path) >= 2:
