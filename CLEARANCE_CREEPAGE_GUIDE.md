@@ -4,10 +4,10 @@
 - **IEC60664-1**: Insulation coordination for equipment within low-voltage systems
 - **IPC2221**: Generic Standard on Printed Board Design
 
-**Status:** ✅ **FULLY IMPLEMENTED** (Version 2.0.0)  
-**Implementation:** `clearance_creepage.py` (2206 lines)  
-**Algorithm:** Hybrid Visibility Graph + Dijkstra / Fast A*  
-**Last Updated:** February 13, 2026
+**Status:** ✅ **FULLY IMPLEMENTED** (Version 3.0.0)  
+**Implementation:** `clearance_creepage.py` (~2934 lines)  
+**Algorithm:** Dijkstra Waypoint Graph with Bounding-Box Extremity Waypoints  
+**Last Updated:** March 27, 2026
 
 ---
 
@@ -160,37 +160,42 @@ def calculate_clearance(pad_a, pad_b, board):
 
 ### Creepage (Surface Path)
 
-**2D Surface Pathfinding Algorithm:**
+**Dijkstra Waypoint Graph Algorithm:**
+
+The creepage path is measured along the PCB surface, routing around physical
+slots/cutouts that break the surface path. The algorithm uses a Dijkstra-based
+waypoint graph with bounding-box extremity waypoints placed at slot tips.
 
 ```python
 def calculate_creepage(pad_a, pad_b, board):
     """
     Calculate minimum surface distance along PCB.
     
-    Must consider:
-    - PCB traces, pads, copper pours as obstacles
-    - Slots/cutouts BREAK creepage path (infinite distance)
-    - Grooves/isolations increase path length
-    - Different layers have different paths
+    Key design decisions:
+    - Only slots/cutouts are barriers (pads/traces are surface features)
+    - Edge.Cuts = board outline (boundary, no waypoints generated)
+    - Internal .Cuts layers = isolation slots (waypoints at tips)
+    - Waypoints placed at bbox extremities with 0.1mm offset
+    - Dijkstra finds guaranteed shortest path on waypoint graph
     """
     
-    # 1. Build obstacle map (all copper on same layer)
-    copper_obstacles = get_copper_shapes(board, layer)
+    # 1. Separate slot barriers into board outline vs internal slots
+    edge_cuts = [obs for obs in obstacles if layer == 'Edge.Cuts']
+    internal_slots = [obs for obs in obstacles if layer != 'Edge.Cuts']
     
-    # 2. Run A* pathfinding on PCB surface
-    # Avoid crossing any copper that belongs to other nets
-    path = astar_surface_path(
-        start=pad_a.position,
-        goal=pad_b.position,
-        obstacles=copper_obstacles,
-        layer=layer
-    )
+    # 2. Generate waypoints at bounding-box extremities of each slot
+    # 8 reference points per slot: 4 midpoints + 4 corners
+    # Each expanded in 8 directions (cardinal + diagonal) at 0.1mm offset
+    waypoints = get_slot_waypoints(internal_slots, boundary=edge_cuts)
     
-    # 3. Check for slots/cutouts that break the path
-    if crosses_pcb_edge(path, board):
-        return float('inf')  # Creepage broken
+    # 3. Build visibility graph: edge exists iff line doesn't cross any slot
+    # O(N²) visibility checks where N = waypoints + start + goal
+    graph = build_visibility_graph(start, goal, waypoints, all_slots)
     
-    return path.length
+    # 4. Dijkstra shortest path on the visibility graph
+    path = dijkstra(graph, start, goal)
+    
+    return path.length  # or None if no path exists
 ```
 
 **Special Cases:**
@@ -282,15 +287,15 @@ if isolation_type == "reinforced":
 
 ## Implementation Details
 
-### Status: ✅ IMPLEMENTED (Version 2.0.0)
+### Status: ✅ IMPLEMENTED (Version 3.0.0)
 
-The clearance/creepage checker is **fully implemented** in `clearance_creepage.py` (2206 lines).
+The clearance/creepage checker is **fully implemented** in `clearance_creepage.py` (~2934 lines).
 
 ### Architecture
 
 **File:** `clearance_creepage.py`  
 **Class:** `ClearanceCreepageChecker`  
-**Algorithm:** Hybrid pathfinding with spatial indexing
+**Algorithm:** Dijkstra waypoint graph with bbox extremity waypoints + A* fallback
 
 ### Key Components
 
@@ -300,104 +305,165 @@ The clearance/creepage checker is **fully implemented** in `clearance_creepage.p
    - Dramatically improves performance on dense boards
 
 2. **ClearanceCreepageChecker** - Main verification engine
-   - Parses voltage domains from config (supports KiCad Net Classes)
+   - Parses voltage domains from config (supports KiCad Net Classes + pattern matching)
    - Calculates clearance (2D air gap) between domain pairs
-   - Calculates creepage (surface path) using hybrid algorithm
+   - Calculates creepage (surface path) using Dijkstra waypoint graph
    - Draws violation markers with detailed messaging
+   - Optional debug path visualization on marker layer
 
 ### Clearance Calculation (Air Gap)
 
-**Method:** 2D Euclidean distance between pad centers
+**Method:** 2D Euclidean distance between pad edges
 
 ```python
-# Simple 2D distance (does not consider Z-axis/layers)
+# IEC 60664-1: measure from conductive EDGE, not pad centre
+start = get_pad_edge_point(pad_a, toward=pad_b)
+goal  = get_pad_edge_point(pad_b, toward=pad_a)
 distance = math.sqrt((x2-x1)**2 + (y2-y1)**2)
 ```
 
 **Notes:**
-- Measures pad center to pad center (conservative estimate)
-- Does NOT account for pad shape/edge-to-edge distance
-- Suitable for most PCB designs where clearance is >1mm
+- Measures pad **edge-to-edge** (not center-to-center) per IEC 60664-1
+- Uses `_get_pad_edge_point()` to find closest boundary point
+- 2D distance (does not consider Z-axis/layer heights)
 
 ### Creepage Calculation (Surface Path)
 
-**Hybrid Algorithm** - Automatically selects best pathfinding method:
+**Primary Algorithm: Dijkstra Waypoint Graph**
 
-#### Method 1: Visibility Graph + Dijkstra (<100 obstacles)
-- **Use case:** Boards with low obstacle count
-- **Algorithm:** 
-  1. Build visibility graph connecting all visible vertices (endpoints + obstacle corners)
-  2. Use Dijkstra's algorithm to find shortest path
-- **Performance:** O(V²) for graph building, O(E log V) for pathfinding
-- **Optimal:** Always finds true shortest path
-- **Typical runtime:** 0.5-2 seconds per domain pair
+The creepage pathfinder routes around physical slots/cutouts that break the PCB
+surface. Only slots are barriers — pads, traces, and zones are surface features
+the creepage path travels along (not around).
 
-#### Method 2: Fast A* (≥100 obstacles)
-- **Use case:** Dense boards with many obstacles
-- **Algorithm:**
-  1. Build spatial grid index for fast obstacle queries
-  2. Use A* pathfinding with Euclidean heuristic
-  3. Navigate around copper obstacles (pads, traces, zones)
-- **Performance:** O(N log N) with good heuristic
-- **Near-optimal:** Finds good path (may not be absolute shortest)
-- **Typical runtime:** 1-5 seconds per domain pair
-- **Limit:** Up to 500 obstacles per layer (configurable)
+#### Step 1: Slot Barrier Separation
+
+Slot barriers are separated into two categories:
+- **Edge.Cuts** (layer ID 25) = Board outline boundary
+  - Paths cannot cross the board edge
+  - No waypoints generated (they'd be off-board)
+- **Internal .Cuts layers** (e.g., GM1_2mm_slots.Cuts, layer ID 21) = Isolation slots
+  - These are the obstacles the path must detour around
+  - Waypoints are generated at their tips/corners
+
+#### Step 2: Bounding-Box Extremity Waypoints
+
+For each internal slot, waypoints are generated at **bounding-box extremities**:
+
+```
+  ┌──────────────────────────┐ ← slot bbox
+  │  ×  ──────  ×  ──────  × │ ← top corners + midpoint
+  │  │                     │  │
+  │  ×        SLOT         ×  │ ← left/right midpoints
+  │  │                     │  │
+  │  ×  ──────  ×  ──────  × │ ← bottom corners + midpoint  
+  └──────────────────────────┘
+        8 reference points per slot
+```
+
+Each reference point is expanded in **8 directions** (cardinal + diagonal) with
+**0.1mm offset** from the slot polygon, then filtered:
+- Must not be inside any slot polygon
+- Must not be outside the board boundary (Edge.Cuts)
+
+This produces ~40-50 valid waypoints per slot (520 total for 11 slots).
+
+**Why bbox extremities?** Slot polygons are rounded rectangles (line +
+`TransformShapeToPolygon` 0.1mm buffer). Angle-based vertex extraction picks
+mid-side vertices (where straight meets curve), missing the actual slot tips.
+Bbox extremities always capture the true tip positions.
+
+#### Step 3: Dijkstra on Visibility Graph
+
+```
+Nodes = {start, goal} ∪ all_waypoints
+Edges = {(A, B) | straight line A→B doesn't cross ANY slot}
+Weight = Euclidean distance
+```
+
+- **O(N²)** visibility checks where N = waypoints + 2
+- Each check tests line segment against all slot polygons (including Edge.Cuts)
+- Uses bbox fast-rejection + CCW segment-polygon intersection test
+- Standard Dijkstra with priority queue finds guaranteed shortest path
+
+**Typical performance:** 522 nodes, ~22K edges, ~136K visibility checks
+
+#### Step 4: Fallback (Fast A*)
+
+If Dijkstra fails (rare), a Fast A* with spatial grid index is available
+for dense boards with 100+ obstacles.
 
 #### Obstacle Detection
 
-**Obstacles** = All copper features except the two nets being measured:
-- Pads (other nets)
-- Tracks/segments
-- Zones/copper pours
-- Vias (other nets)
+**Slot obstacles** = Physical board cutouts that break the surface path:
+- Edge.Cuts segments (board outline)
+- Internal .Cuts layer segments (isolation slots)
+- Converted to polygons via `TransformShapeToPolygon(0.1mm buffer)`
 
-**Spatial filtering** (20mm margin) reduces obstacle search space
+**Other obstacles** (pads, tracks, zones) are tracked for spatial filtering
+but do NOT block the creepage path — they are surface features.
+
+**Spatial filtering** expands search box to cover all slot barriers
 
 #### Multi-Layer Handling
 
-Checks creepage **independently on each layer**:
+Checks creepage **independently on each copper layer**:
 - F.Cu (front copper)
 - B.Cu (back copper)
 - Inner layers (if configured)
 
 Reports **shortest path across all layers**
 
+Checks the **3 closest pad pairs** per domain pair for efficiency.
+
+#### Debug Visualization
+
+When `draw_creepage_path = true` in TOML config:
+- Draws polyline showing the actual creepage path on the marker layer
+- Shows distance label (actual vs required)
+- Useful for verifying path correctness visually in KiCad
+
 #### Special Cases
 
-1. **No path found** - Board slot/cutout breaks surface path
-2. **Too many obstacles** (>500) - Skips layer, reports in statistics
-3. **Direct line-of-sight** - Fast path without obstacles
+1. **No path found** - Board slot/cutout completely isolates domains
+2. **Direct line-of-sight** - No slot crossing, returns straight distance
+3. **Board outline only** - Path crosses Edge.Cuts but not internal slots
 
 ### Performance Characteristics
 
 **Typical Runtime** (complex multi-voltage board):
-- 6 voltage domains → 15 domain pairs to check
+- 6 voltage domains → up to 15 domain pairs to check
 - 3-6 domain pairs have conductors to measure
-- 15-30 seconds total execution time
+- 3 closest pad pairs checked per domain pair
+- 10-30 seconds total execution time
 
-**Example Statistics** (Real board test):
+**Example Statistics** (HV_Attenuator test board):
 ```
-Domain Pair: MAINS_L ↔ +3V3
-  Layer F.Cu: 31 obstacles → 1.02mm (required 6mm) ❌ VIOLATION
-  Layer B.Cu: 87 obstacles → 6.24mm (required 6mm) ✅ PASS
+Domain Pair: HV_8kV ↔ GROUND (80kV → 0V)
+  Layer F.Cu: 306 obstacles, 19 slot barriers
+    11 internal slots → 520 waypoints
+    Dijkstra: 522 nodes, 22284 edges, 135981 visibility checks
+    Shortest path: 10.16mm via 6 waypoints (required: 12.0mm) ❌
 
-Domain Pair: HIGH_VOLTAGE_DC ↔ GROUND  
-  Layer F.Cu: 115 obstacles → Fast A* → No path (PCB slot)
-  Layer B.Cu: 261 obstacles → Fast A* → No path (PCB slot)
+Path: START(212.08, 142.84) → WP1(212.57, 144.03) → WP2(213.53, 144.17)
+    → WP3(214.63, 144.03) → WP4(214.77, 142.23) → WP5(214.70, 141.10)
+    → WP6(214.60, 140.10) → GOAL(213.20, 137.61)
 ```
 
 ### Configuration
 
-See [emc_rules.toml](../emc_rules.toml) for complete configuration:
+See [emc_rules.toml](emc_rules.toml) for complete configuration:
 
 ```toml
 [clearance_creepage]
 enabled = true
-check_clearance = true   # Air gap distance
-check_creepage = true    # Surface path distance
-safety_margin_factor = 1.2  # 20% safety margin
-max_obstacles = 500      # Performance limit per layer
+check_clearance = true          # Air gap distance
+check_creepage = true           # Surface path distance
+safety_margin_factor = 1.2      # 20% safety margin
+max_obstacles = 500             # Performance limit per layer
 obstacle_search_margin_mm = 20.0  # Spatial filtering
+list_all_nets = false           # true = show all nets, false = assigned only
+draw_creepage_path = true       # Draw debug path on marker layer
+slot_layer_names = ["Edge.Cuts", "GM1_2mm_slots.Cuts"]  # Slot barrier layers
 
 [[clearance_creepage.voltage_domains]]
 name = "MAINS_L"
@@ -413,6 +479,15 @@ isolation_type = "reinforced"
 min_clearance_mm = 6.0
 min_creepage_mm = 8.0
 ```
+
+### Key Configuration Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `slot_layer_names` | `["Edge.Cuts"]` | Layers containing slot/cutout barriers |
+| `draw_creepage_path` | `false` | Draw debug polyline showing creepage path |
+| `list_all_nets` | `true` | Show all board nets vs only assigned nets |
+| `max_obstacles` | `500` | Max obstacles per layer before skipping |
 
 ### Usage Example
 
@@ -432,7 +507,12 @@ min_creepage_mm = 8.0
 To modify the algorithm:
 - Edit `clearance_creepage.py`
 - Key methods: `_calculate_clearance()`, `_calculate_creepage()`
-- Pathfinding: `_visibility_graph_path()`, `_fast_astar_path()`
+- **Pathfinding entry point:** `_visibility_graph_path()` — separates Edge.Cuts from internal slots
+- **Waypoint generation:** `_get_slot_waypoints()` — bbox extremity waypoints with 0.1mm offset
+- **Shortest path:** `_dijkstra_waypoint_path()` — Dijkstra on visibility graph of waypoints
+- **Slot intersection:** `_path_crosses_slot()` — checks line against slot polygons only
+- **Debug visualization:** `_draw_debug_creepage_path()` — polyline on marker layer
+- **A* fallback:** `_astar_surface_path_fast()` — dense board fallback
 - Adjust performance limits: `max_obstacles`, `obstacle_search_margin_mm`
 
 ---
@@ -542,43 +622,49 @@ if altitude_m > 2000:
 
 ---
 
-## Next Steps for Implementation
+## Algorithm Evolution
 
-1. **Implement basic clearance checking:**
-   - Start with pad-to-pad distances only
-   - Use 2D distance (ignore Z-axis initially)
-   - Match nets to voltage domains
+| Version | Date | Algorithm | Key Change |
+|---------|------|-----------|------------|
+| 1.0 | Jan 2026 | Recursive detour | Initial slot-avoidance pathfinding |
+| 2.0 | Feb 2026 | Hybrid A* + Visibility Graph | Angle-based key vertices, spatial indexing |
+| 3.0 | Mar 2026 | Dijkstra Waypoint Graph | Bbox extremity waypoints, Edge.Cuts separation |
 
-2. **Add creepage calculation:**
-   - Implement surface pathfinding algorithm
-   - Detect slots/cutouts
-   - Handle different layers
+### Version 3.0 Key Improvements
 
-3. **Add table interpolation:**
-   - Parse voltage tables from TOML
-   - Implement linear interpolation
+1. **Bbox extremity waypoints** replace angle-based vertex extraction
+   - Slot polygons are rounded rectangles; angle-based approach picked mid-side vertices
+   - Bbox approach always finds actual slot tips (4 midpoints + 4 corners per slot)
 
-4. **Add isolation requirement lookup:**
-   - Check specific domain pairs first
-   - Fall back to standard tables
+2. **Edge.Cuts separation** — board outline vs internal slots
+   - Edge.Cuts = board boundary (no waypoints, used only as barrier)
+   - Internal .Cuts layers = isolation slots (waypoints generated at tips)
 
-5. **Apply safety factors:**
-   - Reinforced insulation (2×)
-   - Safety margin (1.2×)
-   - Altitude correction
+3. **Dijkstra replaces recursive detour**
+   - Recursive approach burned 5000+ calls on dense waypoint sets
+   - Dijkstra on waypoint graph: guaranteed shortest path, instant results
 
-6. **Draw violation markers:**
-   - Show actual vs required distances
-   - Color-code by severity
-   - Link to standard reference
+4. **0.1mm waypoint offset** — tight routing at slot edges
+   - Matches the polygon buffer size from `TransformShapeToPolygon`
+   - 1.0mm was too far from slots; 0.01mm caused grazing intersection failures
 
-7. **Generate report:**
-   - Summary of all domain pairs
-   - Minimum distance found for each
-   - Pass/fail status
+5. **Debug creepage path visualization**
+   - `draw_creepage_path = true` draws polyline + label on marker layer
+   - Shows actual routing path for visual verification
+
+6. **Pad edge-to-edge measurement**
+   - IEC 60664-1 requires measurement from conductive edges, not pad centres
+   - `_get_pad_edge_point()` finds closest boundary point toward opposing pad
+
+### Validated Results
+
+On HV_Attenuator test board (80kV domain vs GND, 11 internal slots):
+- **Path distance:** 10.16mm (routes around L-shaped slot barrier)
+- **Slot extension test:** Adding 1mm to slot → path increases by 2mm (2:1 ratio confirmed)
+- **Performance:** 522 nodes, 22K edges, 136K visibility checks
 
 ---
 
-**Last Updated:** February 6, 2026  
+**Last Updated:** March 27, 2026  
 **Configuration File:** `emc_rules.toml`  
 **Plugin File:** `emc_auditor_plugin.py`

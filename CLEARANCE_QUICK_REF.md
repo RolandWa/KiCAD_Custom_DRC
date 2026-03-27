@@ -2,7 +2,8 @@
 # IEC60664-1 / IPC2221
 
 **Status:** ✅ Implementation Active (Use with EMC Auditor Plugin)  
-**Last Updated:** February 13, 2026
+**Last Updated:** March 27, 2026
+**Algorithm:** Dijkstra Waypoint Graph (v3.0)
 
 **Conditions:** Overvoltage Category II, Pollution Degree 2, Material Group II (FR4), Altitude <2000m
 
@@ -91,9 +92,16 @@
 3. **High Voltage ↔ Microcontroller** - Basic + supplementary OR reinforced
 
 ### Breaking Creepage Paths:
-- **Slots/Cutouts:** Infinite creepage (you MUST route around board edge)
+- **Slots/Cutouts:** The creepage path must route AROUND the slot tip
+  - Path length increases by ~2× the slot length extension (validated)
+  - Use `slot_layer_names` in TOML to define which layers contain slots
 - **Routed Grooves:** Increases creepage distance = 2×depth + width
 - **Isolation Barriers:** Physical plastic walls improve safety
+
+### Debug Visualization:
+- Set `draw_creepage_path = true` in `emc_rules.toml`
+- Shows actual routing path as polyline on marker layer in KiCad
+- Displays distance label (actual vs required) for verification
 
 ---
 

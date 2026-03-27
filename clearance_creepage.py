@@ -322,6 +322,11 @@ class ClearanceCreepageChecker:
                                     self.creepage_violations += 1
                                 else:
                                     self.log(f"      ✓ PASS")
+                                    if self.config.get('draw_creepage_path', False) and path and len(path) >= 2:
+                                        self._draw_debug_creepage_path(
+                                            domain_a, domain_b, actual_creepage_mm, required_creepage_mm,
+                                            path, start_pad, end_pad, create_group_func
+                                        )
                             else:
                                 self.log(f"      Could not calculate creepage")
         
@@ -394,6 +399,7 @@ class ClearanceCreepageChecker:
         """
         voltage_domains = self.config.get('voltage_domains', [])
         domain_map = {}
+        failed_domains = []  # Track domains that got no net assignments
         
         self.log(f"\n--- Parsing Voltage Domains ---")
         self.log(f"Found {len(voltage_domains)} domain(s) in configuration")
@@ -450,6 +456,43 @@ class ClearanceCreepageChecker:
                 self.log(f"    ✓ Assigned {pattern_matches} net(s) via pattern matching")
             else:
                 self.log(f"    ⚠ No nets matched patterns")
+                failed_domains.append(domain_name)
+        
+        # Print board net inventory:
+        #   list_all_nets = true  → show ALL nets (useful for first-time setup)
+        #   list_all_nets = false → show only nets assigned to a domain
+        list_all = self.config.get('list_all_nets', False)
+        show_inventory = bool(failed_domains) or list_all
+        if show_inventory or domain_map:
+            self.log(f"\n--- Board Net Inventory (configuration reference) ---")
+            if failed_domains:
+                self.log(f"  The following domain(s) found no nets: {', '.join(failed_domains)}")
+                self.log(f"  Add matching substrings to 'net_patterns' in emc_rules.toml\n")
+            all_net_names = sorted(
+                net.GetNetname()
+                for net in self.board.GetNetInfo().NetsByName().values()
+                if net.GetNetname()
+            )
+            if list_all:
+                # Show every net on the board
+                if all_net_names:
+                    self.log(f"  All nets on this board ({len(all_net_names)} total):")
+                    for name in all_net_names:
+                        assigned = domain_map.get(name, {}).get('domain_name', '')
+                        tag = f"  → assigned to {assigned}" if assigned else ""
+                        self.log(f"    • {name}{tag}")
+                else:
+                    self.log("  ⚠ Board has no named nets — is the PCB file loaded correctly?")
+            else:
+                # Show only nets assigned to a domain
+                assigned_nets = sorted(n for n in all_net_names if n in domain_map)
+                if assigned_nets:
+                    self.log(f"  Assigned nets ({len(assigned_nets)} of {len(all_net_names)} total):")
+                    for name in assigned_nets:
+                        dname = domain_map[name]['domain_name']
+                        self.log(f"    • {name}  → assigned to {dname}")
+                else:
+                    self.log("  ⚠ No nets assigned to any domain")
         
         return domain_map
     
@@ -458,8 +501,9 @@ class ClearanceCreepageChecker:
         self.log(f"\n--- Voltage Domain Assignments ---")
         
         if not self.domain_map:
-            self.log("⚠️  No nets assigned to voltage domains")
-            self.log("HINT: Define Net Classes in KiCad or check net_patterns in TOML config")
+            self.log("⚠️  No nets assigned to any voltage domain — clearance/creepage check will be skipped")
+            self.log("HINT: See 'Board Net Inventory' above to find the correct net names")
+            self.log("HINT: Update 'net_patterns' in emc_rules.toml, or assign nets to Net Classes in KiCad")
             return
         
         # Group nets by domain for cleaner output
@@ -862,11 +906,8 @@ class ClearanceCreepageChecker:
         Returns:
             tuple: (distance_mm, path_nodes, start_pad, end_pad) or (float('inf'), None, None, None) if no path
         """
-        import heapq
-        
         # Configuration - AGGRESSIVE limits to prevent hangs
         max_iterations = 200  # A* iterations per pad pair (typical path: 20-50 iterations)
-        fast_rejection_factor = 2.0  # Skip if clearance already sufficient
         max_pairs_to_check = 3  # Only check closest pad pairs (reduced for speed)
         max_pads_per_domain = 5  # Reduced from 10 - limit pads sampled
         
@@ -891,13 +932,23 @@ class ClearanceCreepageChecker:
         best_start_pad = None
         best_end_pad = None
         
+        # BUG FIX: Filter pads to only those present on the layer being checked.
+        # Previously used all-layer pads, causing cross-layer pairs (e.g., F.Cu pad checked
+        # against B.Cu pad) on a single-layer creepage pass — producing wrong geometry.
+        pads_a_on_layer = [p for p in pads_a if p.IsOnLayer(layer)]
+        pads_b_on_layer = [p for p in pads_b if p.IsOnLayer(layer)]
+
+        if not pads_a_on_layer or not pads_b_on_layer:
+            self.log(f"    No pads on layer {layer_name} for one or both domains, skipping")
+            return None
+
         # Optimize: only check closest pad pairs (spatial pruning)
         # For each pad in domain A, find closest few pads in domain B
-        max_pairs_to_check = min(max_pairs_to_check, len(pads_a) * len(pads_b))
-        
+        max_pairs_to_check = min(max_pairs_to_check, len(pads_a_on_layer) * len(pads_b_on_layer))
+
         pairs_to_check = []
-        for pad_a in pads_a[:max_pads_per_domain]:  # Limit pads from domain A
-            for pad_b in pads_b[:max_pads_per_domain]:  # Limit pads from domain B
+        for pad_a in pads_a_on_layer[:max_pads_per_domain]:  # Limit pads from domain A
+            for pad_b in pads_b_on_layer[:max_pads_per_domain]:  # Limit pads from domain B
                 # Quick distance estimate
                 approx_dist = self.get_distance(pad_a.GetPosition(), pad_b.GetPosition())
                 pairs_to_check.append((approx_dist, pad_a, pad_b))
@@ -1306,6 +1357,40 @@ class ClearanceCreepageChecker:
             bbox_min_y = min(closest_a_pos.y, closest_b_pos.y) - margin
             bbox_max_y = max(closest_a_pos.y, closest_b_pos.y) + margin
             
+            # If slot barriers are configured, expand the search box to include
+            # their bounding boxes (not the full board — that pulls in too many obstacles).
+            # The path needs to route around slot tips, so the bbox must cover those.
+            slot_layer_names_cfg = self.config.get('slot_layer_names', ['Edge.Cuts'])
+            has_extra_slots = any(n != 'Edge.Cuts' for n in slot_layer_names_cfg)
+            if has_extra_slots:
+                # Collect slot barrier bboxes so the search area covers their tips
+                extra_barrier_ids = set()
+                for lname in slot_layer_names_cfg:
+                    if lname == 'Edge.Cuts':
+                        continue
+                    try:
+                        lyr_id = self.board.GetLayerID(lname)
+                        if lyr_id >= 0:
+                            extra_barrier_ids.add(lyr_id)
+                    except Exception:
+                        pass
+                for drawing in self.board.GetDrawings():
+                    if drawing.GetLayer() in extra_barrier_ids:
+                        db = drawing.GetBoundingBox()
+                        bbox_min_x = min(bbox_min_x, db.GetLeft()   - margin)
+                        bbox_max_x = max(bbox_max_x, db.GetRight()  + margin)
+                        bbox_min_y = min(bbox_min_y, db.GetTop()    - margin)
+                        bbox_max_y = max(bbox_max_y, db.GetBottom() + margin)
+                for fp in self.board.GetFootprints():
+                    for graphic in fp.GraphicalItems():
+                        if graphic.GetLayer() in extra_barrier_ids:
+                            db = graphic.GetBoundingBox()
+                            bbox_min_x = min(bbox_min_x, db.GetLeft()   - margin)
+                            bbox_max_x = max(bbox_max_x, db.GetRight()  + margin)
+                            bbox_min_y = min(bbox_min_y, db.GetTop()    - margin)
+                            bbox_max_y = max(bbox_max_y, db.GetBottom() + margin)
+                self.log(f"    Slot detour mode: search box expanded to cover slot barriers")
+            
             def in_bounding_box(pos):
                 """Check if position is within search area"""
                 return (bbox_min_x <= pos.x <= bbox_max_x and 
@@ -1382,15 +1467,16 @@ class ClearanceCreepageChecker:
             if net_name in excluded_nets or net_name == "":
                 continue
             
-            # SPATIAL FILTER: Skip zones outside search area
-            # Check if zone bounding box intersects search area
+            # SPATIAL FILTER: Skip zones whose bounding box doesn't overlap the search area.
+            # BUG FIX: The previous center-point check missed large copper pours whose
+            # center lies outside the search box but whose body extends well into it.
             zone_bbox = zone.GetBoundingBox()
-            zone_center = pcbnew.VECTOR2I(
-                (zone_bbox.GetLeft() + zone_bbox.GetRight()) // 2,
-                (zone_bbox.GetTop() + zone_bbox.GetBottom()) // 2
-            )
-            if not in_bounding_box(zone_center):
-                continue
+            if spatial_filtering_enabled:
+                if not (zone_bbox.GetRight()  >= bbox_min_x and
+                        zone_bbox.GetLeft()   <= bbox_max_x and
+                        zone_bbox.GetBottom() >= bbox_min_y and
+                        zone_bbox.GetTop()    <= bbox_max_y):
+                    continue
             
             zone_poly = zone.Outline()
             if zone_poly.OutlineCount() > 0:
@@ -1401,6 +1487,95 @@ class ClearanceCreepageChecker:
                     'type': 'zone'
                 })
         
+        # Collect Edge.Cuts and configured slot layers as creepage barriers.
+        # A path that crosses a physical board cut has INFINITE creepage — it is impossible
+        # without routing around the entire board edge.  These must be hard obstacles.
+        #
+        # IMPORTANT: spatial filtering is NOT applied here.  A slot that bisects the search
+        # area can have both endpoints outside it while still physically blocking the path.
+        slot_layer_names = self.config.get('slot_layer_names', ['Edge.Cuts'])
+        barrier_layer_ids = {pcbnew.Edge_Cuts}  # Always include the standard KiCad constant
+        for lname in slot_layer_names:
+            try:
+                lyr_id = self.board.GetLayerID(lname)
+                if lyr_id >= 0:
+                    barrier_layer_ids.add(lyr_id)
+                    self.log(f"    Slot barrier layer: '{lname}' → layer ID {lyr_id}")
+                else:
+                    self.log(f"    WARNING: Slot layer '{lname}' → ID {lyr_id} (not found on board)")
+            except Exception as e:
+                self.log(f"    WARNING: Slot layer '{lname}' lookup failed: {e}")
+
+        # Debug: list all board layers to help identify naming issues
+        self.log(f"    Barrier layer IDs to search: {barrier_layer_ids}")
+
+        edge_cut_count = 0
+
+        # Board-level graphics on Edge.Cuts (lines, arcs, circles defining outline/slots)
+        board_drawing_count = 0
+        for drawing in self.board.GetDrawings():
+            board_drawing_count += 1
+            if drawing.GetLayer() not in barrier_layer_ids:
+                continue
+            self.log(f"    Found barrier drawing on layer {drawing.GetLayer()} "
+                     f"({self.board.GetLayerName(drawing.GetLayer())}), "
+                     f"shape type: {drawing.GetClass()}")
+            draw_poly = pcbnew.SHAPE_POLY_SET()
+            try:
+                # 0.1mm clearance ensures even hairline/zero-width cuts create a definite
+                # polygon barrier wide enough for the intersection tests to catch.
+                drawing.TransformShapeToPolygon(
+                    draw_poly, drawing.GetLayer(),
+                    pcbnew.FromMM(0.1), pcbnew.FromMM(0.005), pcbnew.ERROR_INSIDE
+                )
+            except Exception:
+                continue
+            if draw_poly.OutlineCount() > 0:
+                obstacles.append({
+                    'polygon': draw_poly,
+                    'bbox': draw_poly.BBox(),
+                    'net': '',
+                    'type': 'edge_cut',
+                    'layer_name': self.board.GetLayerName(drawing.GetLayer())
+                })
+                edge_cut_count += 1
+
+        # Footprint-level graphics on Edge.Cuts (slots routed into/through component pads)
+        for footprint in self.board.GetFootprints():
+            for graphic in footprint.GraphicalItems():
+                if graphic.GetLayer() not in barrier_layer_ids:
+                    continue
+                draw_poly = pcbnew.SHAPE_POLY_SET()
+                try:
+                    graphic.TransformShapeToPolygon(
+                        draw_poly, graphic.GetLayer(),
+                        pcbnew.FromMM(0.1), pcbnew.FromMM(0.005), pcbnew.ERROR_INSIDE
+                    )
+                except Exception:
+                    continue
+                if draw_poly.OutlineCount() > 0:
+                    obstacles.append({
+                        'polygon': draw_poly,
+                        'bbox': draw_poly.BBox(),
+                        'net': '',
+                        'type': 'edge_cut',
+                        'layer_name': self.board.GetLayerName(graphic.GetLayer())
+                    })
+                    edge_cut_count += 1
+
+        self.log(f"    Total board drawings scanned: {board_drawing_count}")
+        if edge_cut_count > 0:
+            self.log(f"    Added {edge_cut_count} Edge.Cuts/slot barrier(s) (infinite-creepage boundaries)")
+        else:
+            self.log(f"    WARNING: No slot barriers found! Check slot_layer_names in TOML")
+
+        # Count obstacle types for diagnostics
+        type_counts = {}
+        for obs in obstacles:
+            t = obs.get('type', 'unknown')
+            type_counts[t] = type_counts.get(t, 0) + 1
+        self.log(f"    Obstacle types: {type_counts}")
+
         filtering_status = "with spatial filtering" if spatial_filtering_enabled else "no filtering"
         self.log(f"    Built obstacle map ({filtering_status}): {len(obstacles)} obstacles on layer {self.board.GetLayerName(layer)}")
         return obstacles
@@ -1589,6 +1764,31 @@ class ClearanceCreepageChecker:
         
         return angle_diff
     
+    def _full_visibility_graph_path(self, start, goal, obstacles):
+        """
+        Full visibility-graph + Dijkstra (used as last-resort fallback).
+
+        Args:
+            start: pcbnew.VECTOR2I (pad edge point)
+            goal:  pcbnew.VECTOR2I (pad edge point)
+            obstacles: list of obstacle dicts
+
+        Returns:
+            dict: {'length': float (mm), 'nodes': [VECTOR2I, ...]} or None
+        """
+        if len(obstacles) > 300:
+            self.log(f"        Full VG skipped: too many obstacles ({len(obstacles)})")
+            return None
+
+        self.log(f"        Building spatial index for full VG...")
+        spatial_index = ObstacleSpatialIndex(obstacles, cell_size_mm=5.0)
+
+        self.log(f"        Building visibility graph...")
+        vertices, graph = self._build_visibility_graph(start, goal, obstacles, spatial_index)
+
+        self.log(f"        Running Dijkstra...")
+        return self._dijkstra(graph, 0, 1, vertices)
+
     def _build_visibility_graph(self, start, goal, obstacles, spatial_index):
         """
         Build visibility graph connecting visible vertices.
@@ -1613,23 +1813,63 @@ class ClearanceCreepageChecker:
         max_total_vertices = 150  # With 150 vertices: 150² = 22,500 checks (manageable)
         max_vertices_per_obstacle = 3  # Only 3 most significant corners per obstacle
         
-        # Extract key corners from obstacles
-        all_obstacle_vertices = []
+        # --- HIGH-PRIORITY: Slot / Edge.Cuts barrier vertices -----------------
+        # Extract only the key corners (slot tips / sharp bends), not every polygon
+        # approximation point.  Slot polygons can have 20-50 vertices per segment
+        # due to curve tessellation — dumping them all explodes the VG.
+        slot_key_vertices = []
+        regular_obstacles = []
         for obstacle in obstacles:
+            if obstacle.get('type') == 'edge_cut':
+                # Use _get_key_vertices with a generous per-polygon budget
+                kvs = self._get_key_vertices(obstacle['polygon'], max_vertices_per_polygon=6)
+                slot_key_vertices.extend(kvs)
+            else:
+                regular_obstacles.append(obstacle)
+        
+        # Deduplicate slot vertices (many segments share endpoints)
+        seen = set()
+        unique_slot_verts = []
+        for sv in slot_key_vertices:
+            key = (sv.x, sv.y)
+            if key not in seen:
+                seen.add(key)
+                unique_slot_verts.append(sv)
+        
+        # Add small offsets around each slot key vertex to create "go-around"
+        # waypoints the pathfinder can use to skirt slot tips.
+        offset_iu = pcbnew.FromMM(0.5)
+        go_around_verts = []
+        for sv in unique_slot_verts:
+            go_around_verts.append(pcbnew.VECTOR2I(sv.x + offset_iu, sv.y))
+            go_around_verts.append(pcbnew.VECTOR2I(sv.x - offset_iu, sv.y))
+            go_around_verts.append(pcbnew.VECTOR2I(sv.x, sv.y + offset_iu))
+            go_around_verts.append(pcbnew.VECTOR2I(sv.x, sv.y - offset_iu))
+        
+        # Add slot vertices first (guaranteed inclusion)
+        vertices.extend(unique_slot_verts)
+        vertices.extend(go_around_verts)
+        slot_vertex_count = len(unique_slot_verts) + len(go_around_verts)
+        
+        # Budget remaining for regular obstacle corners
+        remaining_budget = max(max_total_vertices - len(vertices), 20)
+        
+        # Extract key corners from regular obstacles (non-slot)
+        all_obstacle_vertices = []
+        for obstacle in regular_obstacles:
             poly = obstacle['polygon']
             key_vertices = self._get_key_vertices(poly, max_vertices_per_obstacle)
             all_obstacle_vertices.extend(key_vertices)
         
-        # If too many vertices, sample them
-        if len(all_obstacle_vertices) > max_total_vertices - 2:
-            self.log(f"        WARNING: Too many vertices ({len(all_obstacle_vertices)}), sampling to {max_total_vertices-2}")
-            # Sample evenly across all vertices
-            step = len(all_obstacle_vertices) // (max_total_vertices - 2)
+        # If too many regular vertices, sample them
+        if len(all_obstacle_vertices) > remaining_budget:
+            self.log(f"        Sampling {len(all_obstacle_vertices)} regular vertices to {remaining_budget} (slot vertices preserved: {slot_vertex_count})")
+            step = len(all_obstacle_vertices) // remaining_budget
             all_obstacle_vertices = all_obstacle_vertices[::max(1, step)]
         
-        vertices.extend(all_obstacle_vertices[:max_total_vertices - 2])
+        vertices.extend(all_obstacle_vertices[:remaining_budget])
         
-        self.log(f"        Visibility graph: {len(vertices)} vertices (2 endpoints + {len(vertices)-2} obstacle corners)")
+        self.log(f"        Visibility graph: {len(vertices)} vertices (2 endpoints + {slot_vertex_count} slot waypoints + {len(vertices)-2-slot_vertex_count} obstacle corners)")
         
         # Build adjacency graph with progress logging
         graph = {i: [] for i in range(len(vertices))}
@@ -1640,10 +1880,6 @@ class ClearanceCreepageChecker:
         
         # Check visibility between all vertex pairs
         for i in range(len(vertices)):
-            # Progress logging every 10 vertices
-            if i % 10 == 0 and i > 0:
-                self.log(f"        Progress: {i}/{len(vertices)} vertices processed, {edges_added} edges found")
-            
             for j in range(i + 1, len(vertices)):
                 v_i = vertices[i]
                 v_j = vertices[j]
@@ -1740,45 +1976,512 @@ class ClearanceCreepageChecker:
         self.log(f"        Dijkstra: No path found")
         return None
     
+    def _get_pad_edge_point(self, pad, target_pos, layer):
+        """
+        Return the point on the pad's copper boundary that is closest to target_pos.
+
+        IEC 60664-1 defines creepage as the shortest path along the insulating surface
+        between two CONDUCTIVE EDGES, not conductor centres.  Using pad centres can
+        under-estimate creepage by half the pad diagonal on each side.
+
+        Implementation: iterate every edge segment of the pad polygon outline and find
+        the globally closest point on the boundary to target_pos (closest-point-on-
+        segment projection).  Falls back to pad centre if the polygon is unavailable.
+
+        Args:
+            pad:        pcbnew.PAD
+            target_pos: pcbnew.VECTOR2I  – the other pad's reference position
+            layer:      pcbnew layer ID used for polygon calculation
+
+        Returns:
+            pcbnew.VECTOR2I: boundary point on the pad polygon closest to target_pos
+        """
+        poly = self._get_pad_polygon(pad, layer)
+        if poly.OutlineCount() == 0:
+            return pad.GetPosition()  # Fallback: polygon unavailable
+
+        outline = poly.Outline(0)
+        point_count = outline.PointCount()
+        if point_count == 0:
+            return pad.GetPosition()
+
+        min_dist_sq = float('inf')
+        closest = pad.GetPosition()
+
+        for i in range(point_count):
+            seg_start = outline.CPoint(i)
+            seg_end   = outline.CPoint((i + 1) % point_count)
+
+            # Project target_pos onto the edge segment, clamped to [0, 1]
+            dx = seg_end.x - seg_start.x
+            dy = seg_end.y - seg_start.y
+            len_sq = dx * dx + dy * dy
+            if len_sq == 0:
+                candidate = seg_start
+            else:
+                t = ((target_pos.x - seg_start.x) * dx +
+                     (target_pos.y - seg_start.y) * dy) / len_sq
+                t = max(0.0, min(1.0, t))
+                candidate = pcbnew.VECTOR2I(
+                    int(seg_start.x + t * dx),
+                    int(seg_start.y + t * dy)
+                )
+
+            # Use squared distance to avoid sqrt in comparisons
+            ddx = candidate.x - target_pos.x
+            ddy = candidate.y - target_pos.y
+            dist_sq = ddx * ddx + ddy * ddy
+            if dist_sq < min_dist_sq:
+                min_dist_sq = dist_sq
+                closest = candidate
+
+        return closest
+
+    def _find_blocking_slots(self, point_a, point_b, slot_obstacles):
+        """
+        Find all slot obstacles that block a straight line between two points.
+
+        Args:
+            point_a: pcbnew.VECTOR2I
+            point_b: pcbnew.VECTOR2I
+            slot_obstacles: list of obstacle dicts (edge_cut type only)
+
+        Returns:
+            list of obstacle dicts that block the line
+        """
+        blockers = []
+        for obs in slot_obstacles:
+            poly = obs['polygon']
+            bbox = obs.get('bbox')
+            if self._line_intersects_polygon(point_a, point_b, poly, bbox):
+                blockers.append(obs)
+        return blockers
+
+    def _path_crosses_slot(self, point_a, point_b, slot_obstacles):
+        """
+        Check if straight line from point_a to point_b intersects any slot.
+        For creepage, only physical slots/cutouts are barriers — pads, zones,
+        and other copper features are surface features the path travels along.
+
+        Args:
+            point_a: pcbnew.VECTOR2I
+            point_b: pcbnew.VECTOR2I
+            slot_obstacles: list of obstacle dicts (edge_cut type only)
+
+        Returns:
+            bool: True if path crosses a slot, False otherwise
+        """
+        for obs in slot_obstacles:
+            poly = obs['polygon']
+            bbox = obs.get('bbox')
+            if self._line_intersects_polygon(point_a, point_b, poly, bbox):
+                return True
+        return False
+
+    def _get_slot_waypoints(self, slot_obstacles, boundary_obstacles=None):
+        """
+        Extract offset waypoints around key corners of slot obstacles.
+        Waypoints are filtered against ALL slot polygons (including board
+        outline) to ensure they are in valid (non-slot, on-board) positions.
+
+        Args:
+            slot_obstacles: list of obstacle dicts — internal slots only
+                (Edge.Cuts should NOT be passed here; it's the board outline)
+            boundary_obstacles: optional list of Edge.Cuts obstacle dicts
+                used only for filtering waypoints that land off-board
+
+        Returns:
+            dict: {obstacle_id: [list of VECTOR2I waypoints]} keyed by id(obs)
+        """
+        offset_iu = pcbnew.FromMM(0.1)  # 0.1mm offset — matches polygon buffer, tight routing
+        diag = int(offset_iu * 0.707)   # diagonal offset
+        # 8 directions: cardinal + diagonal
+        offsets = [
+            (offset_iu, 0), (-offset_iu, 0),
+            (0, offset_iu), (0, -offset_iu),
+            (diag, diag), (diag, -diag),
+            (-diag, diag), (-diag, -diag),
+        ]
+
+        # Collect all slot polygons for cross-slot filtering
+        # Include internal slot polys + optional Edge.Cuts boundary polys
+        all_polys = [obs['polygon'] for obs in slot_obstacles]
+        if boundary_obstacles:
+            all_polys.extend(obs['polygon'] for obs in boundary_obstacles)
+
+        slot_wp_map = {}
+        for obs in slot_obstacles:
+            # Use bounding box extremities instead of angle-based key vertices.
+            # Slot polygons are rounded rectangles (line + buffer). The angle-based
+            # approach picks vertices mid-side (where straight meets curve), missing
+            # the actual tips where the path needs to go around.
+            # The 4 bbox extremes (left, right, top, bottom midpoints) plus the
+            # 4 bbox corners give complete coverage of slot tip waypoints.
+            bbox = obs.get('bbox')
+            if not bbox:
+                continue
+            cx = (bbox.GetLeft() + bbox.GetRight()) // 2
+            cy = (bbox.GetTop() + bbox.GetBottom()) // 2
+            tip_points = [
+                pcbnew.VECTOR2I(bbox.GetLeft(), cy),    # left tip
+                pcbnew.VECTOR2I(bbox.GetRight(), cy),   # right tip
+                pcbnew.VECTOR2I(cx, bbox.GetTop()),     # top tip
+                pcbnew.VECTOR2I(cx, bbox.GetBottom()),  # bottom tip
+                pcbnew.VECTOR2I(bbox.GetLeft(), bbox.GetTop()),      # top-left corner
+                pcbnew.VECTOR2I(bbox.GetRight(), bbox.GetTop()),     # top-right corner
+                pcbnew.VECTOR2I(bbox.GetLeft(), bbox.GetBottom()),   # bottom-left corner
+                pcbnew.VECTOR2I(bbox.GetRight(), bbox.GetBottom()),  # bottom-right corner
+            ]
+            wps = []
+            seen = set()
+            for kv in tip_points:
+                for dx, dy in offsets:
+                    pt = pcbnew.VECTOR2I(kv.x + dx, kv.y + dy)
+                    key = (pt.x, pt.y)
+                    if key not in seen:
+                        seen.add(key)
+                        # Filter: must not be inside ANY slot polygon
+                        inside_any = False
+                        for poly in all_polys:
+                            if poly.Contains(pt):
+                                inside_any = True
+                                break
+                        if not inside_any:
+                            wps.append(pt)
+            slot_wp_map[id(obs)] = wps
+        return slot_wp_map
+
+    def _dijkstra_waypoint_path(self, start, goal, slot_obstacles, slot_wp_map):
+        """
+        Find shortest slot-avoiding path using Dijkstra on the waypoint graph.
+
+        Nodes = {start, goal} ∪ all waypoints from slot_wp_map.
+        An edge exists between two nodes iff the straight line between them
+        does not cross any slot obstacle.  Edge weight = Euclidean distance.
+
+        This replaces the recursive detour approach which suffered from
+        exponential branching on dense waypoint sets.
+
+        Returns:
+            dict: {'length_iu': int, 'nodes': [VECTOR2I, ...]} or None
+        """
+        # Collect unique waypoints
+        all_wps = []
+        seen = set()
+        for wps in slot_wp_map.values():
+            for wp in wps:
+                key = (wp.x, wp.y)
+                if key not in seen:
+                    seen.add(key)
+                    all_wps.append(wp)
+
+        nodes = [start, goal] + all_wps
+        n = len(nodes)
+
+        # Build adjacency list — O(N²) visibility checks against slots only
+        adj = [[] for _ in range(n)]
+        vis_checks = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                vis_checks += 1
+                if not self._path_crosses_slot(nodes[i], nodes[j], slot_obstacles):
+                    d = self.get_distance(nodes[i], nodes[j])
+                    adj[i].append((j, d))
+                    adj[j].append((i, d))
+
+        # Dijkstra from node 0 (start) to node 1 (goal)
+        dist = [float('inf')] * n
+        prev = [-1] * n
+        dist[0] = 0
+        pq = [(0, 0)]  # (distance, node_index)
+
+        while pq:
+            d, u = heapq.heappop(pq)
+            if d > dist[u]:
+                continue
+            if u == 1:  # reached goal
+                break
+            for v, w in adj[u]:
+                nd = d + w
+                if nd < dist[v]:
+                    dist[v] = nd
+                    prev[v] = u
+                    heapq.heappush(pq, (nd, v))
+
+        if dist[1] == float('inf'):
+            self.log(f"        Dijkstra: no path found ({n} nodes, {vis_checks} visibility checks)")
+            return None
+
+        # Reconstruct path
+        path = []
+        cur = 1
+        while cur != -1:
+            path.append(nodes[cur])
+            cur = prev[cur]
+        path.reverse()
+
+        edge_count = sum(len(a) for a in adj) // 2
+        self.log(f"        Dijkstra: path found ({n} nodes, {edge_count} edges, "
+                 f"{vis_checks} visibility checks)")
+        return {'length_iu': dist[1], 'nodes': path}
+
+    def _recursive_detour(self, start, goal, slot_obstacles, slot_wp_map,
+                          depth, max_depth, best_so_far,
+                          call_counter, memo):
+        """
+        Recursively find the shortest path from start to goal that avoids
+        all slot obstacles.  Only slots (physical gaps/cutouts) are barriers;
+        pads and zones are surface features the creepage path travels along.
+
+        Safety guarantees against hanging:
+        - call_counter[0] tracks total recursive calls; aborts at budget (5000).
+        - memo caches results for (start, goal) pairs to avoid redundant work.
+        - max_depth caps recursion depth (one level per slot crossing).
+
+        Args:
+            start:  pcbnew.VECTOR2I
+            goal:   pcbnew.VECTOR2I
+            slot_obstacles: list of edge_cut obstacle dicts (slots only)
+            slot_wp_map: {id(obs): [waypoints]} from _get_slot_waypoints
+            depth:  current recursion depth
+            max_depth: max recursion depth
+            best_so_far: float, best total path length found so far (IU), for pruning
+            call_counter: list [count, max_budget] — mutable counter shared across calls
+            memo: dict {(sx, sy, gx, gy): result} — memoization cache
+
+        Returns:
+            dict: {'length_iu': int, 'nodes': [VECTOR2I, ...]} or None
+        """
+        # Budget check — hard limit on total recursive calls
+        call_counter[0] += 1
+        if call_counter[0] > call_counter[1]:
+            return None
+
+        # Memoization lookup
+        memo_key = (start.x, start.y, goal.x, goal.y)
+        if memo_key in memo:
+            return memo[memo_key]
+
+        # Base case: direct line doesn't cross any slot → straight distance
+        if not self._path_crosses_slot(start, goal, slot_obstacles):
+            result = {'length_iu': self.get_distance(start, goal),
+                      'nodes': [start, goal]}
+            memo[memo_key] = result
+            return result
+
+        if depth >= max_depth:
+            memo[memo_key] = None
+            return None
+
+        # Find all slots that block start→goal
+        blockers = self._find_blocking_slots(start, goal, slot_obstacles)
+        if not blockers:
+            # No slot blocks the line — path is clear
+            result = {'length_iu': self.get_distance(start, goal),
+                      'nodes': [start, goal]}
+            memo[memo_key] = result
+            return result
+
+        # Depth-0 diagnostics: log which slots block and waypoint reachability
+        if depth == 0 and hasattr(self, 'log'):
+            for bi, blk in enumerate(blockers):
+                bbox = blk.get('bbox')
+                lname = blk.get('layer_name', '?')
+                if bbox:
+                    self.log(f"          Blocker {bi}: bbox ({pcbnew.ToMM(bbox.GetLeft()):.1f}, "
+                             f"{pcbnew.ToMM(bbox.GetTop()):.1f})-"
+                             f"({pcbnew.ToMM(bbox.GetRight()):.1f}, "
+                             f"{pcbnew.ToMM(bbox.GetBottom()):.1f})mm "
+                             f"layer={lname}")
+            # Count total reachable waypoints across ALL slots
+            all_wps = [wp for wps in slot_wp_map.values() for wp in wps]
+            reachable_from_start = []
+            for wp in all_wps:
+                if not self._path_crosses_slot(start, wp, slot_obstacles):
+                    reachable_from_start.append(wp)
+            reachable_to_goal = []
+            for wp in all_wps:
+                if not self._path_crosses_slot(wp, goal, slot_obstacles):
+                    reachable_to_goal.append(wp)
+            self.log(f"          Total waypoints: {len(all_wps)}, "
+                     f"{len(reachable_from_start)} reachable from start, "
+                     f"{len(reachable_to_goal)} reachable to goal")
+            # Log positions of reachable waypoints
+            for i, wp in enumerate(reachable_from_start[:8]):
+                self.log(f"            from_start[{i}]: ({pcbnew.ToMM(wp.x):.2f}, {pcbnew.ToMM(wp.y):.2f})")
+            for i, wp in enumerate(reachable_to_goal[:8]):
+                self.log(f"            to_goal[{i}]: ({pcbnew.ToMM(wp.x):.2f}, {pcbnew.ToMM(wp.y):.2f})")
+            # Check if any from_start can reach any to_goal directly
+            connected = 0
+            for ws in reachable_from_start[:20]:
+                for wg in reachable_to_goal[:20]:
+                    if not self._path_crosses_slot(ws, wg, slot_obstacles):
+                        connected += 1
+            self.log(f"          Direct from_start→to_goal connections: {connected}")
+
+        # Try waypoints from ALL slots, not just the blockers.
+        # The correct detour often goes around the end of a slot chain,
+        # which is a waypoint of a DIFFERENT slot segment than the one
+        # directly blocking the line.
+        best_result = None
+        best_length = best_so_far
+
+        tried_wps = set()
+        all_waypoints = [(wp, obs_id) for obs_id, wps in slot_wp_map.items() for wp in wps]
+
+        for wp, _ in all_waypoints:
+            wp_key = (wp.x, wp.y)
+            if wp_key in tried_wps:
+                continue
+            tried_wps.add(wp_key)
+
+            # Budget exhausted?
+            if call_counter[0] > call_counter[1]:
+                break
+
+            # Quick pruning: straight-line lower bound can't beat current best
+            lower_bound = self.get_distance(start, wp) + self.get_distance(wp, goal)
+            if lower_bound >= best_length:
+                continue
+
+            # Recursively solve start→wp (may cross other slots)
+            leg1 = self._recursive_detour(
+                start, wp, slot_obstacles, slot_wp_map,
+                depth + 1, max_depth, best_length,
+                call_counter, memo)
+            if leg1 is None:
+                continue
+
+            remaining_budget = best_length - leg1['length_iu']
+            if remaining_budget <= 0:
+                continue
+
+            # Recursively solve wp→goal (may cross other slots)
+            leg2 = self._recursive_detour(
+                wp, goal, slot_obstacles, slot_wp_map,
+                depth + 1, max_depth, remaining_budget,
+                call_counter, memo)
+            if leg2 is None:
+                continue
+
+            total = leg1['length_iu'] + leg2['length_iu']
+            if total < best_length:
+                best_length = total
+                # Merge paths: leg1 nodes + leg2 nodes (skip duplicate wp)
+                best_result = {
+                    'length_iu': total,
+                    'nodes': leg1['nodes'] + leg2['nodes'][1:]
+                }
+
+        memo[memo_key] = best_result
+        return best_result
+
     def _visibility_graph_path(self, start_pad, goal_pad, obstacles, layer):
         """
-        Find shortest surface path using visibility graph + Dijkstra.
-        Falls back to simpler A* for large obstacle counts.
-        
-        Args:
-            start_pad: pcbnew.PAD
-            goal_pad: pcbnew.PAD
-            obstacles: list of obstacle dicts
-            layer: pcbnew layer ID
-        
+        Find shortest surface path using a recursive slot-detour algorithm.
+
+        For creepage, only physical slots/cutouts are barriers that the surface
+        path must go around.  Pads, zones, and other copper features are on the
+        board surface — the creepage path travels along them, not around them.
+
+        Strategy:
+        1. Direct line — if no slot blocks it, return straight distance.
+        2. Recursive slot detour — identify the blocking slot, try waypoints
+           around its tips, recursively solve each sub-leg.
+        3. Full visibility-graph + Dijkstra fallback (rare, complex geometry).
+
         Returns:
             dict: {'length': float (mm), 'nodes': [VECTOR2I, ...]} or None
         """
-        start = start_pad.GetPosition()
-        goal = goal_pad.GetPosition()
-        
-        # Fast path: if direct line is clear, use it
-        if not self._path_crosses_obstacle(start, goal, obstacles):
+        # IEC 60664-1: measure from conductive EDGE, not pad centre
+        start = self._get_pad_edge_point(start_pad, goal_pad.GetPosition(), layer)
+        goal  = self._get_pad_edge_point(goal_pad,  start_pad.GetPosition(), layer)
+
+        # ------------------------------------------------------------------
+        # Extract slot-only obstacles (the only real barriers for creepage)
+        # Separate into:
+        #   - edge_cuts_barriers: Edge.Cuts = external board outline
+        #   - internal_slots: all other .Cuts layers = internal slots/cutouts
+        # Edge.Cuts defines the board boundary — paths can't go off-board.
+        # Internal slots are the obstacles the path must detour around.
+        # ------------------------------------------------------------------
+        all_slot_obstacles = [obs for obs in obstacles if obs.get('type') == 'edge_cut']
+        edge_cuts_barriers = [obs for obs in all_slot_obstacles
+                              if obs.get('layer_name') == 'Edge.Cuts']
+        internal_slots = [obs for obs in all_slot_obstacles
+                          if obs.get('layer_name') != 'Edge.Cuts']
+        self.log(f"        Pathfinder: {len(all_slot_obstacles)} slot barriers "
+                 f"({len(edge_cuts_barriers)} Edge.Cuts board outline, "
+                 f"{len(internal_slots)} internal slots), "
+                 f"{len(obstacles)} total obstacles")
+
+        # ------------------------------------------------------------------
+        # STEP 1: Direct line — no slot crossing means straight distance
+        # Check against ALL barriers (board outline + internal slots)
+        # ------------------------------------------------------------------
+        crosses = self._path_crosses_slot(start, goal, all_slot_obstacles)
+        self.log(f"        Direct line crosses slot: {crosses}")
+        self.log(f"        Start: ({pcbnew.ToMM(start.x):.2f}, {pcbnew.ToMM(start.y):.2f})mm, "
+                 f"Goal: ({pcbnew.ToMM(goal.x):.2f}, {pcbnew.ToMM(goal.y):.2f})mm")
+        if not crosses:
             distance = pcbnew.ToMM(self.get_distance(start, goal))
             return {'length': distance, 'nodes': [start, goal]}
-        
-        # FALLBACK: If too many obstacles, use simple A* instead of visibility graph
-        # Visibility graph O(V²) is too slow for 100+ obstacles even with optimizations
-        if len(obstacles) > 100:
-            self.log(f"        Too many obstacles ({len(obstacles)}), using fast A* instead of visibility graph")
-            return self._astar_surface_path_fast(start_pad, goal_pad, obstacles, layer)
-        
-        # Build spatial index for fast obstacle queries
-        self.log(f"        Building spatial index...")
-        spatial_index = ObstacleSpatialIndex(obstacles, cell_size_mm=5.0)
-        
-        # Build visibility graph
-        self.log(f"        Building visibility graph...")
-        vertices, graph = self._build_visibility_graph(start, goal, obstacles, spatial_index)
-        
-        # Run Dijkstra's algorithm
-        self.log(f"        Running Dijkstra's algorithm...")
-        return self._dijkstra(graph, 0, 1, vertices)  # start=0, goal=1
+
+        # Check if only Edge.Cuts blocks (not internal slots)
+        crosses_internal = self._path_crosses_slot(start, goal, internal_slots)
+        if not crosses_internal:
+            # Direct line only crosses the board outline — pads may be on
+            # separate board sections or the board has a concave outline.
+            # Still need to route around the board edge, so fall through.
+            self.log(f"        Direct line crosses board outline only (no internal slots)")
+
+        # ------------------------------------------------------------------
+        # Collect waypoints ONLY around internal slots (not Edge.Cuts).
+        # Edge.Cuts is the board boundary — waypoints around it would be
+        # off-board and unreachable.  Internal slots are the real obstacles
+        # the creepage path must detour around.
+        # ------------------------------------------------------------------
+        for si, s in enumerate(internal_slots):
+            bb = s.get('bbox')
+            if bb:
+                self.log(f"        Slot[{si}]: ({pcbnew.ToMM(bb.GetLeft()):.2f}, "
+                         f"{pcbnew.ToMM(bb.GetTop()):.2f})-"
+                         f"({pcbnew.ToMM(bb.GetRight()):.2f}, "
+                         f"{pcbnew.ToMM(bb.GetBottom()):.2f})mm")
+        slot_wp_map = self._get_slot_waypoints(internal_slots,
+                                                 boundary_obstacles=edge_cuts_barriers)
+
+        total_wps = sum(len(v) for v in slot_wp_map.values())
+        self.log(f"        Dijkstra waypoint graph: {len(internal_slots)} internal slots, "
+                 f"{total_wps} waypoints (Edge.Cuts excluded from waypoints)")
+
+        # ------------------------------------------------------------------
+        # STEP 2: Dijkstra on waypoint graph
+        # Nodes = {start, goal} ∪ all internal-slot waypoints.
+        # Edges = pairs of nodes whose line doesn't cross any slot.
+        # All slot obstacles (including Edge.Cuts) are used as barriers —
+        # you still can't cross the board outline.
+        # O(N²) visibility checks where N = waypoints + 2.
+        # ------------------------------------------------------------------
+        result = self._dijkstra_waypoint_path(
+            start, goal, all_slot_obstacles, slot_wp_map)
+
+        if result:
+            length_mm = pcbnew.ToMM(result['length_iu'])
+            hops = len(result['nodes']) - 2
+            self.log(f"        Dijkstra found: {length_mm:.2f}mm "
+                     f"({hops} intermediate waypoint{'s' if hops != 1 else ''})")
+            for ni, node in enumerate(result['nodes']):
+                label = "START" if ni == 0 else ("GOAL" if ni == len(result['nodes']) - 1 else f"WP{ni}")
+                self.log(f"          {label}: ({pcbnew.ToMM(node.x):.2f}, {pcbnew.ToMM(node.y):.2f})mm")
+            return {'length': length_mm, 'nodes': result['nodes']}
+
+        # ------------------------------------------------------------------
+        # STEP 3: Dijkstra failed — no path exists through waypoints
+        # ------------------------------------------------------------------
+        self.log(f"        Dijkstra: no path found through waypoints")
+        self.log(f"        No valid creepage path (slot/cutout breaks path)")
+        return None
     
     def _astar_surface_path_fast(self, start_pad, goal_pad, obstacles, layer):
         """
@@ -1794,17 +2497,19 @@ class ClearanceCreepageChecker:
         Returns:
             dict: {'length': float (mm), 'nodes': [VECTOR2I, ...]} or None
         """
-        start = start_pad.GetPosition()
-        goal = goal_pad.GetPosition()
-        
+        # BUG FIX: use pad boundary points (not centres) — IEC 60664-1 measures
+        # creepage between conductive edges, not conductor centroids.
+        start = self._get_pad_edge_point(start_pad, goal_pad.GetPosition(), layer)
+        goal  = self._get_pad_edge_point(goal_pad,  start_pad.GetPosition(), layer)
+
         # Fast path: if direct line is clear, use it
         if not self._path_crosses_obstacle(start, goal, obstacles):
             distance = pcbnew.ToMM(self.get_distance(start, goal))
             return {'length': distance, 'nodes': [start, goal]}
-        
-        # ULTRA AGGRESSIVE LIMITS for speed
-        max_iterations = 100  # Increased from 50
-        max_neighbors = 8     # Increased from 3
+
+        # Iteration budget — large enough for complex boards with 200+ obstacles
+        max_iterations = 5000
+        max_neighbors = 12
         
         # Build spatial index for fast queries
         spatial_index = ObstacleSpatialIndex(obstacles, cell_size_mm=10.0)
@@ -1824,15 +2529,15 @@ class ClearanceCreepageChecker:
         while open_set and iterations < max_iterations:
             iterations += 1
             
-            # Progress logging every 20 iterations
-            if iterations % 20 == 0:
+            # Progress logging every 500 iterations to reduce log spam
+            if iterations % 500 == 0:
                 self.log(f"        Fast A* iteration {iterations}/{max_iterations}, open_set size: {len(open_set)}")
             
             current_f, _, current = heapq.heappop(open_set)
             current_key = self._node_key(current)
             
             # Goal reached?
-            if self.get_distance(current, goal) < pcbnew.FromMM(0.1):  # 0.1mm tolerance
+            if self.get_distance(current, goal) < pcbnew.FromMM(0.01):  # 0.01mm tolerance (consistent with clearance check)
                 path = self._reconstruct_path(came_from, current, start)
                 length = self._calculate_path_length(path)
                 self.log(f"        Fast A* found path: {length:.2f}mm in {iterations} iterations")
@@ -1848,7 +2553,8 @@ class ClearanceCreepageChecker:
             
             # Debug: log if no neighbors found
             if len(neighbors) == 0 and iterations == 1:
-                self.log(f"        WARNING: No neighbors found on first iteration, likely no clear paths")
+                self.log(f"        WARNING: No neighbors found on first iteration ({len(obstacles)} obstacles)")
+                self.log(f"        This may indicate a PCB slot/cutout or extremely dense routing")
             
             for neighbor in neighbors:
                 neighbor_key = self._node_key(neighbor)
@@ -1866,14 +2572,17 @@ class ClearanceCreepageChecker:
                     heapq.heappush(open_set, (f_score, counter, neighbor))
                     counter += 1
         
-        # No path found in limited iterations
-        self.log(f"        Fast A* failed after {iterations} iterations")
+        # Loop ended — distinguish timeout from exhausted search space
+        if open_set:
+            self.log(f"        Fast A* timed out after {iterations} iterations — increase max_obstacles limit or simplify board")
+        else:
+            self.log(f"        Fast A* exhausted search space after {iterations} iterations — no surface path exists (slot/cutout barrier?)")
         return None
     
     def _get_fast_neighbors(self, current, goal, obstacles, spatial_index, max_neighbors):
         """
         Generate minimal neighbor set for fast A*.
-        Samples 2 vertices per obstacle for better connectivity.
+        Uses radial sampling and obstacle vertices for better connectivity.
         
         Args:
             current: pcbnew.VECTOR2I
@@ -1892,8 +2601,62 @@ class ClearanceCreepageChecker:
         if not self._path_crosses_obstacle_fast(current, goal, nearby_obstacles):
             return [goal]  # Direct path found!
         
+        # STRATEGY 1: Radial waypoints (helps escape starting point obstacles)
+        # Cast rays in multiple directions at various distances
+        search_distances_mm = [2.0, 5.0, 10.0, 20.0, 50.0]  # mm - added shorter and longer ranges
+        angles = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]  # degrees - 12 directions
+
+        radial_attempts = 0
+        radial_blocked = 0
+        for dist_mm in search_distances_mm:
+            dist_iu = pcbnew.FromMM(dist_mm)
+            for angle_deg in angles:
+                radial_attempts += 1
+                angle_rad = math.radians(angle_deg)
+                dx = int(dist_iu * math.cos(angle_rad))
+                dy = int(dist_iu * math.sin(angle_rad))
+                waypoint = pcbnew.VECTOR2I(current.x + dx, current.y + dy)
+                
+                # Check if path is clear
+                test_obstacles = spatial_index.get_obstacles_near_line(current, waypoint)
+                if not self._path_crosses_obstacle_fast(current, waypoint, test_obstacles):
+                    neighbors.append(waypoint)
+                    if len(neighbors) >= max_neighbors:
+                        return neighbors[:max_neighbors]
+                else:
+                    radial_blocked += 1
+        
+        # STRATEGY 2: Goal-directed offsets (if some neighbors found, add more toward goal)
+        # Try points along the line to goal, with perpendicular offsets
+        if len(neighbors) < max_neighbors:
+            goal_dist = self.get_distance(current, goal)
+            if goal_dist > 0:
+                # Unit vector toward goal
+                dx_goal = (goal.x - current.x) / goal_dist
+                dy_goal = (goal.y - current.y) / goal_dist
+                
+                # Perpendicular vector
+                dx_perp = -dy_goal
+                dy_perp = dx_goal
+                
+                # Try steps along goal direction with lateral offsets
+                for step_mm in [5.0, 10.0, 20.0]:
+                    step_iu = pcbnew.FromMM(step_mm)
+                    for offset_mm in [-3.0, -1.0, 0, 1.0, 3.0]:  # Lateral offsets
+                        offset_iu = pcbnew.FromMM(offset_mm)
+                        waypoint_x = int(current.x + dx_goal * step_iu + dx_perp * offset_iu)
+                        waypoint_y = int(current.y + dy_goal * step_iu + dy_perp * offset_iu)
+                        waypoint = pcbnew.VECTOR2I(waypoint_x, waypoint_y)
+                        
+                        test_obstacles = spatial_index.get_obstacles_near_line(current, waypoint)
+                        if not self._path_crosses_obstacle_fast(current, waypoint, test_obstacles):
+                            neighbors.append(waypoint)
+                            if len(neighbors) >= max_neighbors:
+                                return neighbors[:max_neighbors]
+        
+        # STRATEGY 3: Obstacle vertices (if above strategies failed)
         # Get nearby obstacles using spatial index
-        search_radius_cells = 3
+        search_radius_cells = 5  # Increased from 3
         current_cell_x = current.x // spatial_index.cell_size
         current_cell_y = current.y // spatial_index.cell_size
         
@@ -1906,7 +2669,7 @@ class ClearanceCreepageChecker:
         
         nearby_obstacles_list = [obstacles[i] for i in list(nearby_obstacle_indices)[:50]]
         
-        # Sample 2 vertices per obstacle
+        # Sample obstacle corners
         for obstacle in nearby_obstacles_list:
             poly = obstacle['polygon']
             if poly.OutlineCount() == 0:
@@ -1917,26 +2680,26 @@ class ClearanceCreepageChecker:
             if point_count == 0:
                 continue
             
-            # Sample 2 points: one closest to goal, one closest to current
+            # Sample corners closest to goal
             candidates = []
-            for i in range(0, point_count, max(1, point_count // 4)):  # Sample 4 points
+            for i in range(0, point_count, max(1, point_count // 6)):  # Sample 6 points
                 vertex = outline.CPoint(i)
                 dist_to_goal = self.get_distance(vertex, goal)
                 candidates.append((dist_to_goal, vertex))
             
-            # Sort by distance to goal, take top 2
+            # Sort by distance to goal, take top 3
             candidates.sort()
-            for _, vertex in candidates[:2]:
+            for _, vertex in candidates[:3]:
                 test_obstacles = spatial_index.get_obstacles_near_line(current, vertex)
                 if not self._path_crosses_obstacle_fast(current, vertex, test_obstacles):
                     neighbors.append(vertex)
-                    if len(neighbors) >= max_neighbors * 2:  # Collect extras, will trim later
+                    if len(neighbors) >= max_neighbors * 3:  # Collect extras
                         break
             
-            if len(neighbors) >= max_neighbors * 2:
+            if len(neighbors) >= max_neighbors * 3:
                 break
         
-        # Sort by distance and limit
+        # Sort by heuristic (distance to current + distance to goal) and limit
         if len(neighbors) > max_neighbors:
             neighbors.sort(key=lambda n: self.get_distance(current, n) + self.get_distance(n, goal))
             neighbors = neighbors[:max_neighbors]
@@ -2155,6 +2918,61 @@ class ClearanceCreepageChecker:
         
         return pcbnew.ToMM(total_length)
     
+    def _draw_debug_creepage_path(self, domain_a, domain_b, actual_mm, required_mm, path, start_pad, end_pad, create_group_func):
+        """
+        Draw the shortest creepage path as a debug polyline on the marker layer.
+        Called when creepage PASSES and draw_creepage_path is enabled.
+        """
+        group = create_group_func(self.board, "CreepagePath", f"{domain_a}_{domain_b}", 0)
+        general = self.auditor.config.get('general', {}) if self.auditor else {}
+        line_width = pcbnew.FromMM(general.get('marker_line_width_mm', 0.1))
+
+        # Draw path segments
+        for i in range(len(path) - 1):
+            seg = pcbnew.PCB_SHAPE(self.board)
+            seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+            seg.SetStart(path[i])
+            seg.SetEnd(path[i + 1])
+            seg.SetLayer(self.marker_layer)
+            seg.SetWidth(line_width)
+            self.board.Add(seg)
+            group.AddItem(seg)
+
+        # Add length label at path midpoint
+        mid_idx = len(path) // 2
+        mid_pt = path[mid_idx]
+        hops = len(path) - 2
+        start_net = start_pad.GetNetname()
+        end_net = end_pad.GetNetname()
+        label = (f"CREEPAGE: {actual_mm:.2f}mm (req {required_mm:.2f}mm) PASS\n"
+                 f"{domain_a}-{domain_b}, {hops} waypoint{'s' if hops != 1 else ''}\n"
+                 f"{start_net} ↔ {end_net}")
+        text_size = pcbnew.FromMM(general.get('marker_text_size_mm', 0.5))
+        text_offset = pcbnew.FromMM(general.get('marker_text_offset_mm', 1.2))
+        txt = pcbnew.PCB_TEXT(self.board)
+        txt.SetText(label)
+        txt.SetPosition(pcbnew.VECTOR2I(mid_pt.x, mid_pt.y - text_offset))
+        txt.SetLayer(self.marker_layer)
+        txt.SetTextSize(pcbnew.VECTOR2I(text_size, text_size))
+        txt.SetTextThickness(line_width)
+        self.board.Add(txt)
+        group.AddItem(txt)
+
+        self.log(f"      Debug: drew creepage path ({len(path)} nodes, {hops} waypoints)")
+
+    def _draw_plain_segment(self, pt_a, pt_b, group):
+        """Draw a plain line segment on the marker layer (no arrowhead)."""
+        general = self.auditor.config.get('general', {})
+        line_width = pcbnew.FromMM(general.get('marker_line_width_mm', 0.1))
+        seg = pcbnew.PCB_SHAPE(self.board)
+        seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+        seg.SetStart(pt_a)
+        seg.SetEnd(pt_b)
+        seg.SetLayer(self.marker_layer)
+        seg.SetWidth(line_width)
+        self.board.Add(seg)
+        group.AddItem(seg)
+
     def _create_creepage_violation_marker(self, domain_a, domain_b, actual_mm, required_mm, path, start_pad, end_pad, create_group_func):
         """
         Draw violation marker for insufficient creepage.
@@ -2189,10 +3007,17 @@ class ClearanceCreepageChecker:
         
         self.draw_marker(self.board, midpoint, msg, self.marker_layer, violation_group)
         
-        # Draw path segments
+        # Draw creepage path as a clean polyline:
+        #   - plain line segments for all intermediate hops
+        #   - single arrowhead + length label only on the final segment
         if path and len(path) >= 2:
-            for i in range(len(path) - 1):
-                self.draw_arrow(self.board, path[i], path[i+1], "", self.marker_layer, violation_group)
+            for i in range(len(path) - 2):  # all but last segment
+                self._draw_plain_segment(path[i], path[i + 1], violation_group)
+            # Last segment: arrowhead marks endpoint, label shows measured length
+            self.draw_arrow(self.board, path[-2], path[-1], f"{actual_mm:.2f}mm", self.marker_layer, violation_group)
+        else:
+            # No path nodes — fall back to a direct straight arrow between pads
+            self.draw_arrow(self.board, start_pad.GetPosition(), end_pad.GetPosition(), f"{actual_mm:.2f}mm", self.marker_layer, violation_group)
         
         # Log to report
         self.log(f"  ❌ CREEPAGE VIOLATION: {domain_a} ({start_net}) ↔ {domain_b} ({end_net})", force=True)

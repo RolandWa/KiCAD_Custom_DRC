@@ -269,7 +269,7 @@ class SignalIntegrityChecker:
         self._check_differential_running_skew()
         
         # Run individual checks - Impedance Control
-        self._check_controlled_impedance()
+        self.violation_count += self._check_controlled_impedance()
         
         self.log(f"\n=== SIGNAL INTEGRITY CHECK COMPLETE: {self.violation_count} violations ===", force=True)
         return self.violation_count
@@ -1164,6 +1164,7 @@ class SignalIntegrityChecker:
         impedance_config = self.config.get('impedance', {})
         target_impedances = impedance_config.get('target_impedance_by_class', {})
         tolerance_ohms = impedance_config.get('impedance_tolerance_ohms', 5.0)
+        min_segment_length_mm = impedance_config.get('min_segment_length_mm', 1.0)
         
         if not target_impedances:
             self.log("No net classes configured for impedance checking (target_impedance_by_class empty)")
@@ -1171,53 +1172,228 @@ class SignalIntegrityChecker:
         
         self.log(f"Impedance targets: {target_impedances}")
         self.log(f"Tolerance: ±{tolerance_ohms}Ω")
+        self.log(f"Min segment length: {min_segment_length_mm}mm")
         
-        # Extract board stackup data
+        # Extract board stackup data (cache printing to avoid repetition)
         stackup = self._get_board_stackup()
+        self._stackup_printed = True  # Prevent re-printing in helper methods
         
-        if not stackup:
-            self.log("⚠ No stackup data available, using FR-4 defaults (35µm copper, εr=4.3)")
+        # Don't set to None - let helper methods validate the data structure
+        # Helper methods will check stackup.get('layers') and use defaults if needed
         
-        # TODO: For each controlled impedance net class:
-        #   - Get all trace segments using GetTracks()
-        #   - For each segment on controlled net:
-        #       * Get layer with segment.GetLayer()
-        #       * Detect transmission line type using _detect_transmission_line_type()
-        #       * Get trace width: segment.GetWidth()
-        #       * Get dielectric height: _get_dielectric_height_to_plane(layer)
-        #       * Get copper thickness: _get_layer_copper_thickness(layer)
-        #       * Get dielectric constant: _get_layer_dielectric_constant(layer)
-        #       * Calculate Z0 using _calculate_microstrip_impedance() or _calculate_stripline_impedance()
-        #       * For differential pairs: measure spacing S, calculate Zdiff with _calculate_differential_impedance()
-        #       * Compare Z0_calc vs Z0_target from config
-        #       * If |Z0_calc - Z0_target| > tolerance: create violation marker
-        #
-        # Example implementation pattern:
-        #   for track in self.board.GetTracks():
-        #       net = track.GetNet()
-        #       if not net or net.GetNetClassName() not in target_impedances:
-        #           continue
-        #       
-        #       layer = track.GetLayer()
-        #       W_mm = pcbnew.ToMM(track.GetWidth())
-        #       H_mm = self._get_dielectric_height_to_plane(layer)
-        #       t_um = self._get_layer_copper_thickness(layer)
-        #       Er = self._get_layer_dielectric_constant(layer)
-        #       
-        #       if self._detect_transmission_line_type(layer) == 'microstrip':
-        #           Z0 = self._calculate_microstrip_impedance(W_mm, H_mm, t_um, Er)
-        #       elif self._detect_transmission_line_type(layer) == 'stripline':
-        #           b_mm = H_mm * 2  # symmetric stripline
-        #           Z0 = self._calculate_stripline_impedance(W_mm, b_mm, t_um, Er)
-        #       
-        #       Z0_target = target_impedances[net.GetNetClassName()]
-        #       if abs(Z0 - Z0_target) > tolerance_ohms:
-        #           self.draw_marker(self.board, track.GetStart(), 
-        #                          f"Z0={Z0:.1f}Ω (target={Z0_target:.1f}Ω)", 
-        #                          self.marker_layer, group)
-        
+        # Statistics
         violations = 0
-        self.log(f"TODO: Controlled impedance check - {violations} violations")
+        checked_segments = 0
+        
+        # Create marker groups (PCB_GROUP objects)
+        # debug_group removed - no longer drawing DEBUG markers on PCB
+        violation_group = self.create_group(self.board, "Impedance", "Violations", 0)
+        
+        # Build map of net_name → (target_impedance, source)
+        # This allows checking by net class OR pattern matching
+        net_to_impedance = {}
+        
+        # Get net info list (KiCad API)
+        netinfo_list = self.board.GetNetInfo()
+        net_count = netinfo_list.GetNetCount()
+        
+        # First pass: Assign nets by net class
+        for net_code in range(net_count):
+            net = netinfo_list.GetNetItem(net_code)
+            if not net:
+                continue
+            
+            net_name = net.GetNetname()
+            if not net_name or net_name == "":
+                continue
+            
+            net_class_name = net.GetNetClassName()
+            
+            if net_class_name in target_impedances:
+                net_to_impedance[net_name] = (target_impedances[net_class_name], f"Net Class '{net_class_name}'")
+        
+        # Second pass: Pattern matching for nets not in classes
+        # Common patterns for controlled impedance nets
+        impedance_patterns = {
+            'USB': ['USB', 'USB_D', 'USB_P', 'USB_N', 'USB2', 'USB3'],
+            'HDMI': ['HDMI', 'HDMI_D', 'HDMI_P', 'HDMI_N', 'TMDS'],
+            'DDR': ['DDR', 'DDR3', 'DDR4', 'DQ', 'DQS', 'DM'],
+            'HighSpeed': ['CLK', 'CLOCK', 'DIFF', 'LVDS', 'PCIE', 'SATA', 'SERDES']
+        }
+        
+        for net_code in range(net_count):
+            net = netinfo_list.GetNetItem(net_code)
+            if not net:
+                continue
+            
+            net_name = net.GetNetname()
+            if not net_name or net_name == "" or net_name in net_to_impedance:
+                continue
+            
+            # Try pattern matching (skip unconnected nets)
+            if 'unconnected' in net_name.lower():
+                continue
+            
+            net_upper = net_name.upper()
+            for class_name, patterns in impedance_patterns.items():
+                if class_name not in target_impedances:
+                    continue
+                
+                for pattern in patterns:
+                    if pattern.upper() in net_upper:
+                        net_to_impedance[net_name] = (target_impedances[class_name], f"Pattern '{pattern}'")
+                        break
+                
+                if net_name in net_to_impedance:
+                    break
+        
+        # Report net assignments
+        if net_to_impedance:
+            self.log(f"\nFound {len(net_to_impedance)} net(s) for impedance checking:")
+            
+            # Count segments per net before filtering
+            net_segment_counts = {}
+            for track in self.board.GetTracks():
+                net = track.GetNet()
+                if not net:
+                    continue
+                net_name = net.GetNetname()
+                if net_name in net_to_impedance:
+                    net_segment_counts[net_name] = net_segment_counts.get(net_name, 0) + 1
+            
+            for net_name, (z0, source) in sorted(net_to_impedance.items()):
+                seg_count = net_segment_counts.get(net_name, 0)
+                self.log(f"  • {net_name}: {z0}Ω (from {source}) - {seg_count} segment(s) total")
+        else:
+            self.log("⚠ No nets found matching configured classes or patterns")
+            self.log("  Tip: Assign nets to net classes (USB, HDMI, DDR, HighSpeed) or use common naming patterns")
+            return 0
+        
+        # Get all tracks from board
+        tracks = self.board.GetTracks()
+        
+        # Track why segments are skipped
+        skipped_reasons = {
+            'too_short': 0,
+            'no_dielectric_height': 0,
+            'unknown_tline_type': 0,
+            'calc_error': 0
+        }
+        
+        # Iterate through each track segment
+        for track in tracks:
+            # Get net information
+            net = track.GetNet()
+            if not net:
+                continue
+            
+            net_name = net.GetNetname()
+            
+            # Filter: only check nets in our impedance map
+            if net_name not in net_to_impedance:
+                continue
+            
+            # Get target impedance for this net
+            Z0_target, source = net_to_impedance[net_name]
+            
+            # Extract geometry
+            layer_id = track.GetLayer()
+            layer_name = self.board.GetLayerName(layer_id)
+            W_mm = pcbnew.ToMM(track.GetWidth())
+            position = track.GetStart()
+            length_mm = pcbnew.ToMM(track.GetLength())
+            
+            # Skip very short segments (configurable threshold)
+            if length_mm < min_segment_length_mm:
+                skipped_reasons['too_short'] += 1
+                continue
+            
+            checked_segments += 1
+            
+            # Get stackup parameters for this layer (always pass stackup to helper methods)
+            # Helper methods will extract values or use defaults if extraction fails
+            t_um = self._get_layer_copper_thickness(layer_id, stackup)
+            Er = self._get_layer_dielectric_constant(layer_id, stackup)
+            
+            # Detect transmission line type
+            tline_type = self._detect_transmission_line_type(layer_name)
+            
+            # Get dielectric height (pass cached stackup to avoid re-parsing)
+            H_mm = self._get_dielectric_height_to_plane(layer_id, stackup)
+            
+            # Handle case where height cannot be determined
+            if H_mm is None or H_mm <= 0:
+                self.log(f"  ⚠ Cannot determine dielectric height for {net_name} on {layer_name}, skipping")
+                skipped_reasons['no_dielectric_height'] += 1
+                continue
+            
+            # Calculate impedance based on transmission line type
+            Z0_calc = None
+            
+            try:
+                if tline_type == 'microstrip':
+                    Z0_calc = self._calculate_microstrip_impedance(W_mm, H_mm, t_um, Er)
+                elif tline_type == 'stripline':
+                    # For stripline, need total height between planes
+                    b_mm = H_mm * 2.0  # Simplified: assume symmetric
+                    Z0_calc = self._calculate_stripline_impedance(W_mm, b_mm, t_um, Er)
+                else:
+                    self.log(f"  ⚠ Unknown transmission line type '{tline_type}' for {net_name} on {layer_name}")
+                    skipped_reasons['unknown_tline_type'] += 1
+                    continue
+                
+            except Exception as e:
+                self.log(f"  ❌ Error calculating impedance for {net_name}: {e}")
+                skipped_reasons['calc_error'] += 1
+                continue
+            
+            # DEBUG markers removed - keeping PCB view clean
+            # All detailed info available in report log below
+            
+            # Check tolerance
+            error = abs(Z0_calc - Z0_target)
+            
+            if error > tolerance_ohms:
+                violations += 1
+                percent_error = (error / Z0_target) * 100
+                
+                # Create compact PCB marker
+                violation_msg = f"❌ {net_name}\nZ0: {Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω)"
+                
+                self.draw_marker(
+                    self.board,
+                    position,
+                    violation_msg,
+                    self.marker_layer,
+                    violation_group
+                )
+                
+                # Draw highlight on the problematic segment for easy visualization
+                self._draw_segment_highlight(track, violation_group, net_name, Z0_calc, Z0_target)
+                
+                # Detailed info in report log
+                self.log(f"  ❌ {net_name}: Z0={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω ±{tolerance_ohms}Ω) ERROR: {error:.1f}Ω ({percent_error:.1f}%)")
+                self.log(f"     Layer: {layer_name} ({tline_type}), Width: {W_mm:.3f}mm, H: {H_mm:.3f}mm, t: {t_um:.1f}µm, εr: {Er:.2f}")
+            else:
+                self.log(f"  ✓ {net_name}: Z0={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω) PASS")
+        
+        # Report summary
+        self.log(f"\nChecked {checked_segments} segments on controlled impedance nets")
+        
+        # Report skipped segments
+        total_skipped = sum(skipped_reasons.values())
+        if total_skipped > 0:
+            self.log(f"Skipped {total_skipped} segment(s):")
+            if skipped_reasons['too_short'] > 0:
+                self.log(f"  • {skipped_reasons['too_short']} too short (< {min_segment_length_mm}mm)")
+            if skipped_reasons['no_dielectric_height'] > 0:
+                self.log(f"  • {skipped_reasons['no_dielectric_height']} no dielectric height")
+            if skipped_reasons['unknown_tline_type'] > 0:
+                self.log(f"  • {skipped_reasons['unknown_tline_type']} unknown transmission line type")
+            if skipped_reasons['calc_error'] > 0:
+                self.log(f"  • {skipped_reasons['calc_error']} calculation error")
+        
+        self.log(f"Controlled impedance check: {violations} violations")
         return violations
     
     # ========================================================================
@@ -1409,7 +1585,120 @@ class SignalIntegrityChecker:
         """
         Calculate differential impedance from single-ended impedance.
         
-        TODO: Implementation needed
+        TODO: Implementation needed - Current simplified method vs. Rigorous Cohn approach
+        
+        NOTE: Current implementation uses simplified exponential coupling coefficient method.
+        This provides reasonable estimates (±10% accuracy) but is NOT rigorous.
+        
+        For HIGH-ACCURACY differential pair synthesis (especially stripline), implement
+        Cohn's elliptic integral method described in IMPEDANCE_ALGORITHM.md.
+        
+        ═══════════════════════════════════════════════════════════════════════════
+        REFERENCES - Classical Papers (S. B. Cohn, IRE Transactions)
+        ═══════════════════════════════════════════════════════════════════════════
+        
+        [1] S. B. Cohn, "Characteristic Impedance of the Shielded-Strip Transmission Line,"
+            IRE Transactions on MTT, vol. 2, no. 2, pp. 52-57, July 1954.
+            → Single stripline with finite thickness, fringing capacitance corrections
+        
+        [2] S. B. Cohn, "Shielded Coupled-Strip Transmission Line,"
+            IRE Transactions on MTT, vol. 3, no. 5, pp. 29-38, October 1955.
+            → The "bible" of coupled striplines, 349+ citations, design nomograms
+            → Even-mode and odd-mode analysis using complete elliptic integrals
+        
+        ═══════════════════════════════════════════════════════════════════════════
+        TODO: IMPLEMENTATION ROADMAP - Cohn's Rigorous Method
+        ═══════════════════════════════════════════════════════════════════════════
+        
+        STEP 1: Determine if stripline or microstrip
+        ────────────────────────────────────────────
+        - IF microstrip (top/bottom layer): Use current simplified method (acceptable)
+        - IF stripline (embedded, symmetric planes): Use Cohn's method (required)
+        - CRITICAL: Cohn assumes homogeneous dielectric (εᵣ constant)
+        - For mixed media: Use Kirschning-Jansen or EM simulator
+        
+        STEP 2: Calculate mode impedances from target Z₀ and coupling k
+        ────────────────────────────────────────────────────────────────
+        Given:
+          - Z₀ = target single-ended impedance (e.g., 50Ω)
+          - k = coupling coefficient (linear, 0 < k < 1)
+                OR from dB: k = 10^(-C_dB/20)
+        
+        Calculate:
+          Z₀ₑ = Z₀ × √[(1 + k)/(1 - k)]    # Even-mode (in-phase)
+          Z₀ₒ = Z₀ × √[(1 - k)/(1 + k)]    # Odd-mode (differential)
+        
+        STEP 3: Solve for elliptic moduli kₑ and kₒ
+        ────────────────────────────────────────────
+        Using complete elliptic integrals K(k):
+          K(kₑ)/K'(kₑ) = 30π / (√εᵣ × Z₀ₑ)
+          K(kₒ)/K'(kₒ) = 30π / (√εᵣ × Z₀ₒ)
+        
+        where:
+          K(k) = scipy.special.ellipk(k²)  # Complete elliptic integral, 1st kind
+          K'(k) = K(√(1 - k²))            # Complementary integral
+        
+        Implementation: Use scipy.optimize to solve for kₑ, kₒ numerically
+        
+        STEP 4: Calculate trace width w and spacing s (SYNTHESIS)
+        ──────────────────────────────────────────────────────────
+        Gap spacing:
+          s/b = (2/π) × ln[(1/√kₑ) × (1 + √(kₑ × kₒ))/(√kₒ - √kₑ)]
+        
+        Trace width:
+          w/b = (1/π) × ln(1/kₑ) - s/b
+        
+        Where b = distance between ground planes (from stackup)
+        
+        STEP 5: Apply finite thickness correction (if t > 0)
+        ─────────────────────────────────────────────────────
+        Corrected width:
+          w' = w - Δw
+        
+        Where (approximation):
+          Δw ≈ t × [1 + ln(4b/t)]/(2π)
+        
+        See Cohn (1954) for exact correction curves/formulas
+        
+        STEP 6: Return differential impedance
+        ──────────────────────────────────────
+        Final result:
+          Zdiff = 2 × Z₀ₒ
+          Zcommon = Z₀ₑ / 2
+        
+        ═══════════════════════════════════════════════════════════════════════════
+        IMPLEMENTATION DEPENDENCIES
+        ═══════════════════════════════════════════════════════════════════════════
+        
+        Required Python packages:
+          - scipy.special.ellipk (complete elliptic integral K)
+          - scipy.optimize.root_scalar (solve for elliptic moduli)
+          - numpy (for sqrt, log, etc.)
+        
+        Required methods to add:
+          - _calculate_even_odd_impedances(Z0, k)
+          - _solve_elliptic_moduli(Z0e, Z0o, Er)
+          - _synthesize_stripline_geometry(ke, ko, b)
+          - _apply_thickness_correction(w, t, b)
+        
+        ═══════════════════════════════════════════════════════════════════════════
+        ACCURACY & VALIDATION
+        ═══════════════════════════════════════════════════════════════════════════
+        
+        Cohn's method (elliptic):   ±2-3% accuracy for stripline
+        Current simplified method:  ±10-15% accuracy (coupling approximation)
+        
+        Test cases for validation:
+          1. USB 2.0: Zdiff = 90Ω, εᵣ = 4.3, b = 0.6mm
+          2. HDMI: Zdiff = 100Ω, εᵣ = 4.3, b = 0.8mm
+          3. PCIe Gen3: Zdiff = 85Ω, εᵣ = 3.48 (Rogers RO4350B)
+        
+        Compare against:
+          - Commercial tools (Polar Si9000, Ansys 2D Extractor)
+          - IPC-2141 tables
+          - Manufacturer stackup calculators
+        
+        ═══════════════════════════════════════════════════════════════════════════
         
         Args:
             Z0_single: Single-ended impedance in Ohms
@@ -1417,7 +1706,7 @@ class SignalIntegrityChecker:
             H_mm: Dielectric height to reference plane in mm
             
         Returns:
-            float: Differential impedance in Ohms
+            float: Differential impedance in Ohms (current: simplified approximation)
         """
         import math
         
@@ -1493,63 +1782,76 @@ class SignalIntegrityChecker:
         else:
             return 'unknown'
     
-    def _get_dielectric_height_to_plane(self, trace_layer):
+    def _get_dielectric_height_to_plane(self, trace_layer, stackup=None):
         """
         Get dielectric height from trace layer to nearest reference plane.
         
-        Implementation uses KiCad's BOARD_STACKUP API (KiCad 7.0+)
+        Uses parsed stackup data to find the distance from a trace layer
+        to the nearest reference plane (above or below).
         
         Args:
             trace_layer: KiCad layer ID
+            stackup: Pre-parsed stackup data (optional, will parse if None)
             
         Returns:
             float: Height in mm, or None if cannot determine
         """
-        try:
-            # KiCad 7.0+ has board stackup API
-            design_settings = self.board.GetDesignSettings()
-            stackup = design_settings.GetStackupDescriptor()
-            
-            if not stackup:
-                self.log("Warning: No stackup data in board file, using defaults")
-                return None
-            
-            # Get all stackup items
-            stackup_items = stackup.GetList()
-            trace_layer_name = self.board.GetLayerName(trace_layer)
-            
-            # Find the trace layer in stackup
-            dielectric_height = 0.0
-            found_trace_layer = False
-            
-            for item in stackup_items:
-                layer_name = item.GetLayerName()
-                
-                if layer_name == trace_layer_name:
-                    found_trace_layer = True
-                    # Found trace layer, now accumulate dielectric until we hit a plane
-                    continue
-                
-                if found_trace_layer:
-                    # Check if this is a dielectric layer
-                    if item.GetType() == pcbnew.BS_ITEM_TYPE_DIELECTRIC:
-                        thickness = item.GetThickness()  # in internal units
-                        dielectric_height += pcbnew.ToMM(thickness)
-                    
-                    # Check if this is a copper plane layer (GND/PWR)
-                    elif item.GetType() == pcbnew.BS_ITEM_TYPE_COPPER:
-                        layer_id = item.GetBrdLayerId()
-                        # Check if this layer has copper zones (planes)
-                        if self._layer_has_planes(layer_id):
-                            # Found reference plane, return accumulated height
-                            return dielectric_height
-            
-            # If no plane found, return None
+        # Don't re-fetch if None provided - use default instead
+        if stackup is None:
+            return 0.2  # Default FR-4 height
+        
+        if not stackup or not stackup.get('layers'):
+            return 0.2  # Default if stackup invalid
+        
+        trace_layer_name = self.board.GetLayerName(trace_layer)
+        layers = stackup['layers']
+        
+        # Find trace layer in stackup
+        trace_idx = None
+        for i, layer in enumerate(layers):
+            if layer['type'] == 'copper' and layer['name'] == trace_layer_name:
+                trace_idx = i
+                break
+        
+        if trace_idx is None:
             return None
+        
+        # Search for nearest reference plane (look down first, then up)
+        # Look downward (increasing index)
+        height_down = 0.0
+        for i in range(trace_idx + 1, len(layers)):
+            layer = layers[i]
             
-        except AttributeError:
-            # Older KiCad version without stackup API
-            self.log("Warning: KiCad version does not support stackup API, using defaults")
+            if layer['type'] == 'dielectric':
+                height_down += layer['thickness_um'] / 1000.0  # Convert μm to mm
+            elif layer['type'] == 'copper':
+                # Found next copper layer, assume it's a reference plane
+                # Return height if > 0
+                if height_down > 0:
+                    return height_down
+                break
+        
+        # Look upward (decreasing index)
+        height_up = 0.0
+        for i in range(trace_idx - 1, -1, -1):
+            layer = layers[i]
+            
+            if layer['type'] == 'dielectric':
+                height_up += layer['thickness_um'] / 1000.0  # Convert μm to mm
+            elif layer['type'] == 'copper':
+                # Found previous copper layer, assume it's a reference plane
+                if height_up > 0:
+                    return height_up
+                break
+        
+        # If we found both, return the smaller (nearest plane)
+        if height_down > 0 and height_up > 0:
+            return min(height_down, height_up)
+        elif height_down > 0:
+            return height_down
+        elif height_up > 0:
+            return height_up
+        else:
             return None
     
     def _parse_stackup_from_file(self, board_file_path):
@@ -1712,55 +2014,75 @@ class SignalIntegrityChecker:
         try:
             board_file_path = self.board.GetFileName()
             if board_file_path:
-                return self._parse_stackup_from_file(board_file_path)
+                stackup_data = self._parse_stackup_from_file(board_file_path)
+                # Only print summary if not already printed (controlled by caller)
+                if stackup_data and not getattr(self, '_stackup_printed', False):
+                    self._report_stackup_summary(stackup_data)
+                return stackup_data
         except Exception:
             pass
         
         # If file parsing fails, return None (will use defaults)
         return None
     
-    def _get_layer_dielectric_constant(self, layer_id):
+    def _get_layer_dielectric_constant(self, layer_id, stackup_data=None):
         """
         Get dielectric constant for layer from stackup.
         
         Args:
             layer_id: KiCad layer ID
+            stackup_data: Pre-parsed stackup data (optional)
             
         Returns:
             float: Dielectric constant (Er), or default 4.3 if unavailable
         """
-        stackup_data = self._get_board_stackup()
+        if stackup_data is None:
+            return 4.3  # No stackup provided, use default (avoid re-fetching)
         
-        if not stackup_data:
+        if not stackup_data or not stackup_data.get('layers'):
             return 4.3  # Default FR-4
         
         layer_name = self.board.GetLayerName(layer_id)
         
-        # Find the dielectric layer after this copper layer
-        found_copper = False
-        for layer in stackup_data['layers']:
+        # Find the copper layer index
+        copper_idx = None
+        for i, layer in enumerate(stackup_data['layers']):
             if layer['type'] == 'copper' and layer['name'] == layer_name:
-                found_copper = True
-                continue
-            
-            if found_copper and layer['type'] == 'dielectric':
+                copper_idx = i
+                break
+        
+        if copper_idx is None:
+            return 4.3  # Layer not found
+        
+        # Search for dielectric layer AFTER this copper (downward in stackup)
+        for i in range(copper_idx + 1, len(stackup_data['layers'])):
+            layer = stackup_data['layers'][i]
+            if layer['type'] == 'dielectric':
                 return layer.get('epsilon_r', 4.3)
         
-        return 4.3  # Default if not found
+        # If not found after, search BEFORE this copper (upward - for bottom layer)
+        for i in range(copper_idx - 1, -1, -1):
+            layer = stackup_data['layers'][i]
+            if layer['type'] == 'dielectric':
+                return layer.get('epsilon_r', 4.3)
+        
+        return 4.3  # Default if no dielectric found
     
-    def _get_layer_copper_thickness(self, layer_id):
+    def _get_layer_copper_thickness(self, layer_id, stackup_data=None):
         """
         Get copper thickness for layer from stackup.
         
         Args:
             layer_id: KiCad layer ID
+            stackup_data: Pre-parsed stackup data (optional)
             
         Returns:
             float: Copper thickness in microns, or default 35μm (1oz) if unavailable
         """
-        stackup_data = self._get_board_stackup()
+        if stackup_data is None:
+            return 35.0  # No stackup provided, use default (avoid re-fetching)
         
-        if not stackup_data:
+        if not stackup_data or not stackup_data.get('layers'):
             return 35.0  # Default 1oz copper
         
         layer_name = self.board.GetLayerName(layer_id)
@@ -1794,6 +2116,43 @@ class SignalIntegrityChecker:
                         return True
         
         return False
+    
+    def _draw_segment_highlight(self, track, group, net_name, Z0_actual, Z0_target):
+        """
+        Draw a visual highlight of the problematic track segment on User.Comments layer.
+        This makes it easy to see exactly which segment needs redesign.
+        
+        Args:
+            track: pcbnew.PCB_TRACK - the track segment with violation
+            group: pcbnew.PCB_GROUP - violation group to add highlight to
+            net_name: str - net name for identification
+            Z0_actual: float - calculated impedance
+            Z0_target: float - target impedance
+        """
+        try:
+            import pcbnew
+            
+            # Create a line on User.Comments layer showing the segment
+            highlight = pcbnew.PCB_SHAPE(self.board)
+            highlight.SetShape(pcbnew.SHAPE_T_SEGMENT)
+            highlight.SetStart(track.GetStart())
+            highlight.SetEnd(track.GetEnd())
+            
+            # Use same width as original track for accurate visualization in tight spaces
+            highlight_width = track.GetWidth()
+            highlight.SetWidth(highlight_width)
+            
+            # Place on User.Comments layer
+            highlight.SetLayer(self.marker_layer)
+            
+            # Add to board and group
+            self.board.Add(highlight)
+            if group:
+                group.AddItem(highlight)
+                
+        except Exception as e:
+            # Don't fail the whole check if highlighting fails
+            self.log(f"    Warning: Could not draw segment highlight: {e}")
     
     def _is_critical_net(self, net):
         """

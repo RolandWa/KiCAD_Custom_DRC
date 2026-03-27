@@ -299,20 +299,41 @@ check_clearance = true  # Air gap distance
 check_creepage = true  # Surface distance (A* pathfinding)
 check_different_layers = false  # NOT YET IMPLEMENTED
 
+# Set to true to always print the full board net inventory in the report,
+# even when all voltage domains matched successfully. Useful for first-time
+# setup or verifying net name assignments.
+list_all_nets = false
+
+# Debug: draw the shortest creepage path as a polyline on the marker layer.
+# Useful for visually verifying that the pathfinder routes correctly around slots.
+# The path is drawn even when creepage PASSES (green dashed line with length label).
+# Set to false for production use to keep the board clean.
+draw_creepage_path = true
+
+# Violation message templates
+violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
+
 min_trace_spacing_mm = 0.2  # Trace-to-trace minimum
 min_pad_spacing_mm = 0.3  # Pad-to-pad minimum
 safety_margin_factor = 1.2  # Safety multiplier (1.2 = 20% margin)
 report_mode = "violations_only"  # or "all_distances"
 
 # Creepage pathfinding: <100 obstacles=Visibility Graph (optimal), ≥100=Fast A* (faster)
-max_obstacles = 270  # Observed max: 261
+max_obstacles = 500  # Raised: recursive slot detour is fast regardless of obstacle count
 obstacle_search_margin_mm = 12.0  # Spatial filter radius
+
+# PCB cut/slot layer names — treated as infinite creepage barriers.
+# Paths that cross a physical board cut have infinite creepage (must route around).
+#
+# KiCad layer naming:
+#   "Edge.Cuts"  — Standard board outline, routed slots, and NPTH slots (always included)
+#
+# Add extra layer names here if your PCB design uses non-standard slot layers:
+slot_layer_names = ["Edge.Cuts", "GM1_2mm_slots.Cuts"]
+
 # Speed tuning: reduce max_obstacles (270→150) or margin_mm (12→10) for 2× faster
 # "No path found" often means PCB slots/cutouts physically separate domains (expected)
-
-# Violation message templates
-violation_message_clearance = "CLEARANCE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
-violation_message_creepage = "CREEPAGE: {actual:.2f}mm < {required:.2f}mm ({domainA}-{domainB})"
 
 # IEC60664-1 Clearance Tables (OVC-II, PD2, auto-adjusted for other OVC)
 # Format: [voltage_rms, clearance_mm]
@@ -682,6 +703,13 @@ voltage_rms = 0
 net_patterns = ["AC_N", "MAINS_N", "N_MAINS", "NEUTRAL"]
 
 [[clearance_creepage.voltage_domains]]
+name = "HV_8kV"
+description = "High voltage DC bus (8000V)"
+voltage_rms = 80000
+net_patterns = ["8kV", "8000V"]
+requires_reinforced_insulation = false
+
+[[clearance_creepage.voltage_domains]]
 name = "HIGH_VOLTAGE_DC"
 description = "High voltage DC bus (400V)"
 voltage_rms = 400
@@ -755,6 +783,11 @@ target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 
 # Impedance tolerance (ohms) - applied to all net classes
 # Example: USB 90Ω ± 5Ω → acceptable range 85-95Ω, HighSpeed 50Ω ± 5Ω → 45-55Ω
 impedance_tolerance_ohms = 5.0
+
+# Minimum segment length to check (mm) - skip very short segments
+# Short segments are typically vias, fanout stubs, or pad connections
+# Default: 1.0mm (adjustable based on design density)
+min_segment_length_mm = 1.0
 
 # Calculation method: Analytical formulas (IPC-2141, Wadell)
 # - Microstrip: External layer with plane below

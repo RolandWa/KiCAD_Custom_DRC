@@ -1,7 +1,8 @@
 # Clearance vs Creepage Visual Guide
 
 **Status:** ✅ Implementation Active (Use with EMC Auditor Plugin)  
-**Last Updated:** February 13, 2026
+**Last Updated:** March 27, 2026
+**Algorithm:** Dijkstra Waypoint Graph with Bbox Extremity Waypoints (v3.0)
 
 ---
 
@@ -182,6 +183,53 @@ CREEPAGE  = 1 + 5 + 1 = 7mm         = 7mm total
 
 ---
 
+## 🛠️ How the Algorithm Finds the Shortest Creepage Path
+
+### Dijkstra Waypoint Graph (v3.0)
+
+The EMC Auditor uses a Dijkstra-based waypoint graph to find the shortest
+surface path around PCB slots/cutouts.
+
+```
+  Step 1: Separate barriers              Step 2: Generate waypoints
+  ┌────────────────────┐          ┌────────────────────┐
+  │ Edge.Cuts = boundary   │          │  × × ×       × × × │
+  │ (no waypoints here)   │          │  × SLOT ×   × SLOT × │
+  │                        │          │  × × ×       × × × │
+  │ Internal slots =       │          │                        │
+  │ obstacles to route     │          │  Waypoints at bbox     │
+  │ around (waypoints!)    │          │  extremities (0.1mm)   │
+  └────────────────────┘          └────────────────────┘
+
+  Step 3: Build visibility graph         Step 4: Dijkstra shortest path
+  ┌────────────────────┐          ┌────────────────────┐
+  │ S───WP1    WP5───G   │          │ S─►WP1              │
+  │ │ ╲   SLOT  / │      │          │     │    SLOT         │
+  │ │  WP2  WP4   │      │          │    WP2     WP5─►G  │
+  │ │ /          \ │      │          │     │  SLOT /        │
+  │ WP3    SLOT  WP6     │          │    WP3──WP4           │
+  │ Edges where no slot   │          │ Shortest path found!  │
+  │ crossing exists        │          │ 10.16mm (6 waypoints) │
+  └────────────────────┘          └────────────────────┘
+```
+
+### Slot Extension = 2× Path Increase (Validated)
+
+```
+  Before (slot = 10mm):              After (slot = 11mm, +1mm):
+  ┌───────────────┐              ┌────────────────┐
+  │     ╭──╮        │              │      ╭──╮         │
+  │ S─►│SL│─►G    │              │ S──►│SL│──►G    │
+  │     ╰──╯        │              │      ╰──╯         │
+  └───────────────┘              └────────────────┘
+  Path: 10.16mm                    Path: 12.15mm (+1.99mm)
+
+  Δ = ~2mm = 2 × 1mm slot extension
+  (path adds ~1mm on approach + ~1mm on departure)
+```
+
+---
+
 ## ⚠️ Common Design Mistakes
 
 ### ❌ Mistake 1: Only Checking Clearance
@@ -295,6 +343,9 @@ Before:                     After:
 ### During Design (Software):
 1. **KiCad DRC:** Set custom clearance rules per net class
 2. **EMC Auditor Plugin:** Automated clearance/creepage verification
+   - Dijkstra waypoint graph finds shortest surface path around slots
+   - Debug visualization: `draw_creepage_path = true` shows routing path
+   - Configurable slot layers via `slot_layer_names` in TOML
 3. **3D Viewer:** Visual inspection of clearances
 
 ### After Manufacturing (Hardware):
@@ -330,4 +381,4 @@ Before:                     After:
 - IEC 60664-1:2020 - Insulation coordination
 - IPC-2221B:2012 - PCB design standard
 
-**Last Updated:** February 6, 2026
+**Last Updated:** March 27, 2026
