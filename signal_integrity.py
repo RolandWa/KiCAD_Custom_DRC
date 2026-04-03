@@ -312,7 +312,7 @@ class SignalIntegrityChecker:
             if not any(p.upper() in net_name.upper() for p in gnd_patterns):
                 continue
             layer_id = zone.GetLayer()
-            outline = zone.GetOutline()
+            outline = zone.Outline()
             if outline is None:
                 continue
             zone_outlines.setdefault(layer_id, []).append(outline)
@@ -785,7 +785,7 @@ class SignalIntegrityChecker:
             if not any(p.upper() in net_name.upper() for p in gnd_patterns):
                 continue
             layer_id = zone.GetLayer()
-            outline = zone.GetOutline()
+            outline = zone.Outline()
             if outline is None:
                 continue
             zone_polys.setdefault(layer_id, []).append(outline)
