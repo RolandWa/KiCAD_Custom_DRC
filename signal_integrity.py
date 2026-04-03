@@ -1375,9 +1375,8 @@ class SignalIntegrityChecker:
         self.log(f"Tolerance: ±{tolerance_ohms}Ω")
         self.log(f"Min segment length: {min_segment_length_mm}mm")
         
-        # Extract board stackup data (cache printing to avoid repetition)
+        # Extract board stackup data
         stackup = self._get_board_stackup()
-        self._stackup_printed = True  # Prevent re-printing in helper methods
         
         # Don't set to None - let helper methods validate the data structure
         # Helper methods will check stackup.get('layers') and use defaults if needed
@@ -2216,14 +2215,11 @@ class SignalIntegrityChecker:
             }
         """
         # Parse stackup from the .kicad_pcb file
+        # Note: _parse_stackup_from_file already logs the stackup summary via self.log()
         try:
             board_file_path = self.board.GetFileName()
             if board_file_path:
-                stackup_data = self._parse_stackup_from_file(board_file_path)
-                # Only print summary if not already printed (controlled by caller)
-                if stackup_data and not getattr(self, '_stackup_printed', False):
-                    self._report_stackup_summary(stackup_data)
-                return stackup_data
+                return self._parse_stackup_from_file(board_file_path)
         except Exception:
             pass
         
