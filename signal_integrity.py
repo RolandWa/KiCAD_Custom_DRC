@@ -281,45 +281,107 @@ class SignalIntegrityChecker:
     def _check_trace_near_plane_edge(self):
         """
         Check for traces too close to reference plane edges.
-        
-        TODO: Implementation needed
-        
-        Description:
-        Traces routed near the edge of their reference plane can radiate EMI
-        and suffer from impedance discontinuities due to lack of proper return path.
-        
-        Algorithm:
-        1. Identify all copper plane zones (GND/power planes)
-        2. Extract plane edge boundaries (polygons)
-        3. For each critical net trace segment:
-           - Find closest reference plane (layer above/below)
-           - Calculate minimum distance to plane edge
-           - Flag if distance < threshold (typically 3x trace width or 3-5mm)
-        
-        Configuration parameters:
-        - min_edge_distance_mm: Minimum distance from trace to plane edge (default: 3.0mm)
-        - critical_net_classes: List of net classes to check (e.g., ['HighSpeed', 'Clock'])
-        - check_all_signals: If True, check all signal traces (default: False)
-        
-        Standards:
-        - IPC-2221: Recommends 3x trace width clearance minimum
-        - Best practice: 5mm for high-speed signals
-        
+
+        For each critical net trace segment, finds the nearest copper zone on an
+        adjacent layer (reference plane) and measures the distance from the trace
+        midpoint to the closest point on the zone's polygon boundary.  Flags
+        segments whose clearance is below the configured threshold.
+
         Returns:
-        Number of violations found
+            int: Number of violations found
         """
         self.log("\n--- Checking Trace Near Plane Edge ---")
-        
-        # Parse configuration
-        # min_edge_distance_mm = self.config.get('min_edge_distance_mm', 3.0)
-        # critical_net_classes = self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
-        
-        # TODO: Implement plane boundary extraction
-        # TODO: Implement trace-to-boundary distance calculation
-        # TODO: Create violation markers for traces too close to edges
-        
+
+        plane_edge_cfg = self.config.get('trace_near_plane_edge', {})
+        if not plane_edge_cfg.get('enabled', False):
+            self.log("Trace near plane edge check disabled")
+            return 0
+
+        min_dist_mm = plane_edge_cfg.get('min_edge_distance_mm', 3.0)
+        critical_classes = plane_edge_cfg.get(
+            'critical_net_classes', self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
+        )
+        min_dist_iu = pcbnew.FromMM(min_dist_mm)
+
+        # Build zone map: layer_id → list of SHAPE_POLY_SET outlines for reference planes
+        # Reference planes are zones whose net is GND-like or a power plane
+        gnd_patterns = plane_edge_cfg.get('reference_plane_patterns', ['GND', 'PWR', 'VCC', 'VDD', 'POWER', 'AGND', 'DGND', 'PGND'])
+        zone_outlines = {}  # layer_id → list of SHAPE_POLY_SET
+        for zone in self.board.Zones():
+            net_name = zone.GetNetname()
+            if not any(p.upper() in net_name.upper() for p in gnd_patterns):
+                continue
+            layer_id = zone.GetLayer()
+            outline = zone.GetOutline()
+            if outline is None:
+                continue
+            zone_outlines.setdefault(layer_id, []).append(outline)
+
+        if not zone_outlines:
+            self.log("  No reference plane zones found — skipping")
+            return 0
+
+        # Pre-build set of adjacent layer pairs: (signal_layer, plane_layer)
+        copper_layers = [l for l in range(pcbnew.F_Cu, pcbnew.B_Cu + 1)
+                         if self.board.IsLayerEnabled(l)]
+
         violations = 0
-        self.log(f"TODO: Trace near plane edge check - {violations} violations")
+        violation_set = set()  # avoid duplicate markers per net
+
+        for track in self.board.GetTracks():
+            if not isinstance(track, pcbnew.PCB_TRACK):
+                continue
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class not in critical_classes:
+                continue
+
+            sig_layer = track.GetLayer()
+            # Find candidate reference plane layers (adjacent copper layers)
+            sig_idx = copper_layers.index(sig_layer) if sig_layer in copper_layers else -1
+            if sig_idx < 0:
+                continue
+            candidate_layers = []
+            if sig_idx > 0:
+                candidate_layers.append(copper_layers[sig_idx - 1])
+            if sig_idx < len(copper_layers) - 1:
+                candidate_layers.append(copper_layers[sig_idx + 1])
+
+            # Find minimum distance from trace midpoint to any reference zone boundary
+            mid = track.GetCenter()
+            min_found = None
+            for plane_layer in candidate_layers:
+                for outline in zone_outlines.get(plane_layer, []):
+                    for poly_idx in range(outline.OutlineCount()):
+                        poly = outline.Outline(poly_idx)
+                        for pt_idx in range(poly.PointCount()):
+                            pt = poly.CPoint(pt_idx)
+                            dx = mid.x - pt.x
+                            dy = mid.y - pt.y
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if min_found is None or dist < min_found:
+                                min_found = dist
+
+            if min_found is None:
+                continue
+
+            if min_found < min_dist_iu:
+                if net_name not in violation_set:
+                    violation_set.add(net_name)
+                    violations += 1
+                    actual_mm = pcbnew.ToMM(min_found)
+                    safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                    group = self.create_group(self.board, "PlaneEdge", safe_name, violations)
+                    msg = f"TRACE NEAR PLANE EDGE\n{net_name}\n{actual_mm:.2f}mm < {min_dist_mm:.1f}mm"
+                    self.draw_marker(self.board, mid, msg, self.marker_layer, group)
+                    self.log(f"  ❌ {net_name} ({net_class}): {actual_mm:.2f}mm to plane edge (min {min_dist_mm:.1f}mm)")
+
+        self.log(f"Trace near plane edge check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -701,14 +763,99 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Unreferenced Traces ---")
-        
-        # TODO: Map signal layers to reference plane layers
-        # TODO: Extract plane coverage polygons
-        # TODO: Calculate trace segments outside plane coverage
-        # TODO: Flag excessive unreferenced lengths
-        
+
+        unref_cfg = self.config.get('unreferenced_traces', {})
+        if not unref_cfg.get('enabled', False):
+            self.log("Unreferenced traces check disabled")
+            return 0
+
+        max_unref_mm = unref_cfg.get('max_unreferenced_length_mm', 1.0)
+        critical_classes = unref_cfg.get(
+            'critical_net_classes', self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
+        )
+        gnd_patterns = unref_cfg.get(
+            'reference_plane_patterns', ['GND', 'PWR', 'VCC', 'VDD', 'POWER', 'AGND', 'DGND', 'PGND']
+        )
+
+        # Build set of copper layers with reference plane coverage per layer
+        # zone_bboxes[layer_id] = list of (xmin, ymin, xmax, ymax, SHAPE_POLY_SET)
+        zone_polys = {}  # layer_id → list of SHAPE_POLY_SET
+        for zone in self.board.Zones():
+            net_name = zone.GetNetname()
+            if not any(p.upper() in net_name.upper() for p in gnd_patterns):
+                continue
+            layer_id = zone.GetLayer()
+            outline = zone.GetOutline()
+            if outline is None:
+                continue
+            zone_polys.setdefault(layer_id, []).append(outline)
+
+        if not zone_polys:
+            self.log("  No reference plane zones found — skipping")
+            return 0
+
+        copper_layers = [l for l in range(pcbnew.F_Cu, pcbnew.B_Cu + 1)
+                         if self.board.IsLayerEnabled(l)]
+
         violations = 0
-        self.log(f"TODO: Unreferenced traces check - {violations} violations")
+        net_unref = {}   # net_name → total unreferenced length (IU)
+        net_positions = {}
+        net_class_cache = {}
+
+        for track in self.board.GetTracks():
+            if not isinstance(track, pcbnew.PCB_TRACK):
+                continue
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class not in critical_classes:
+                continue
+
+            sig_layer = track.GetLayer()
+            sig_idx = copper_layers.index(sig_layer) if sig_layer in copper_layers else -1
+            if sig_idx < 0:
+                continue
+
+            # Check if at least one adjacent layer has a reference plane covering the midpoint
+            mid = track.GetCenter()
+            has_reference = False
+            for offset in (-1, 1):
+                adj_idx = sig_idx + offset
+                if 0 <= adj_idx < len(copper_layers):
+                    plane_layer = copper_layers[adj_idx]
+                    for outline in zone_polys.get(plane_layer, []):
+                        if outline.Contains(mid):
+                            has_reference = True
+                            break
+                if has_reference:
+                    break
+
+            if not has_reference:
+                net_unref[net_name] = net_unref.get(net_name, 0) + track.GetLength()
+                net_class_cache[net_name] = net_class
+                if net_name not in net_positions:
+                    net_positions[net_name] = mid
+
+        max_unref_iu = pcbnew.FromMM(max_unref_mm)
+        for net_name, total_iu in sorted(net_unref.items()):
+            total_mm = pcbnew.ToMM(total_iu)
+            net_class = net_class_cache[net_name]
+            if total_iu > max_unref_iu:
+                violations += 1
+                pos = net_positions[net_name]
+                safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                group = self.create_group(self.board, "UnrefTrace", safe_name, violations)
+                msg = f"UNREFERENCED TRACE\n{net_name}\n{total_mm:.1f}mm without reference plane"
+                self.draw_marker(self.board, pos, msg, self.marker_layer, group)
+                self.log(f"  ❌ {net_name} ({net_class}): {total_mm:.1f}mm unreferenced (max {max_unref_mm:.1f}mm)")
+            else:
+                self.log(f"  ✓ {net_name} ({net_class}): {total_mm:.1f}mm unreferenced")
+
+        self.log(f"Unreferenced traces check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -902,14 +1049,97 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Critical Net Isolation (Single-Ended) ---")
-        
-        # TODO: Implement critical net identification
-        # TODO: Scan adjacent traces perpendicular to critical traces
-        # TODO: Verify ground guards or vacant isolation zones
-        # TODO: Create violation markers where isolation inadequate
-        
+
+        iso_cfg = self.config.get('critical_net_isolation_se', {})
+        if not iso_cfg.get('enabled', False):
+            self.log("Critical net isolation (SE) check disabled")
+            return 0
+
+        critical_classes = iso_cfg.get(
+            'critical_net_classes', self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
+        )
+        # 3W rule default: spacing >= 3 × trace width; or use fixed min_isolation_mm
+        min_isolation_mm = iso_cfg.get('min_isolation_mm', 0.0)  # 0 = use 3W rule per trace
+        three_w_multiplier = iso_cfg.get('three_w_multiplier', 3.0)
+        gnd_patterns = iso_cfg.get(
+            'ground_net_patterns', ['GND', 'AGND', 'DGND', 'PGND', 'CHASSIS', 'PE']
+        )
+
+        # Collect all critical net tracks and all other tracks per layer for fast lookup
+        # Build: layer → list of (xmin, ymin, xmax, ymax, track) for non-critical nets
+        from collections import defaultdict
+        other_tracks = defaultdict(list)  # layer_id → list of PCB_TRACK
+        critical_tracks = []              # list of PCB_TRACK on critical nets
+
+        for track in self.board.GetTracks():
+            if not isinstance(track, pcbnew.PCB_TRACK):
+                continue
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class in critical_classes:
+                critical_tracks.append(track)
+            else:
+                other_tracks[track.GetLayer()].append(track)
+
+        if not critical_tracks:
+            self.log("  No critical net tracks found — skipping")
+            return 0
+
         violations = 0
-        self.log(f"TODO: Critical net isolation (single-ended) check - {violations} violations")
+        violation_set = set()  # (critical_net, offending_net) pairs already reported
+
+        for crit_track in critical_tracks:
+            crit_net = crit_track.GetNetname()
+            crit_layer = crit_track.GetLayer()
+            crit_width_iu = crit_track.GetWidth()
+            crit_width_mm = pcbnew.ToMM(crit_width_iu)
+
+            # Required isolation: max(configured min, 3W rule)
+            required_mm = max(min_isolation_mm, three_w_multiplier * crit_width_mm)
+            required_iu = pcbnew.FromMM(required_mm)
+
+            crit_mid = crit_track.GetCenter()
+
+            for other in other_tracks[crit_layer]:
+                other_net = other.GetNetname()
+                if not other_net:
+                    continue
+                # Skip if it's a ground guard trace (that's the desired protection)
+                if any(p.upper() in other_net.upper() for p in gnd_patterns):
+                    continue
+                # Skip same net fragments
+                if other_net == crit_net:
+                    continue
+
+                # Fast bounding-box pre-filter
+                o_bbox = other.GetBoundingBox()
+                c_bbox = crit_track.GetBoundingBox()
+                bbox_gap_x = max(0, max(o_bbox.GetLeft(), c_bbox.GetLeft()) - min(o_bbox.GetRight(), c_bbox.GetRight()))
+                bbox_gap_y = max(0, max(o_bbox.GetTop(), c_bbox.GetTop()) - min(o_bbox.GetBottom(), c_bbox.GetBottom()))
+                if bbox_gap_x > required_iu * 2 or bbox_gap_y > required_iu * 2:
+                    continue
+
+                dist_iu = self.get_distance(crit_track.GetCenter(), other.GetCenter())
+                if dist_iu < required_iu:
+                    pair_key = (crit_net, other_net)
+                    rev_key = (other_net, crit_net)
+                    if pair_key not in violation_set and rev_key not in violation_set:
+                        violation_set.add(pair_key)
+                        violations += 1
+                        net_class = self._resolve_net_class(crit_net)
+                        actual_mm = pcbnew.ToMM(dist_iu)
+                        safe_name = crit_net.replace('/', '_').replace('(', '').replace(')', '')
+                        group = self.create_group(self.board, "IsolationSE", safe_name, violations)
+                        msg = f"ISOLATION VIOLATION (SE)\n{crit_net} ↔ {other_net}\n{actual_mm:.2f}mm < {required_mm:.2f}mm"
+                        self.draw_marker(self.board, crit_mid, msg, self.marker_layer, group)
+                        self.log(f"  ❌ {crit_net} ↔ {other_net}: {actual_mm:.2f}mm (need {required_mm:.2f}mm = {three_w_multiplier:.0f}W)")
+
+        self.log(f"Critical net isolation (SE) check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -1082,15 +1312,85 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Differential Pair Matching ---")
-        
-        # TODO: Identify differential pairs from net names
-        # TODO: Calculate total routed length for each trace in pair
-        # TODO: Compare lengths and flag mismatches
-        # TODO: Sample spacing along pair route
-        # TODO: Calculate spacing variation and flag inconsistencies
-        
+
+        dp_cfg = self.config.get('differential_pair_matching', {})
+        if not dp_cfg.get('enabled', False):
+            self.log("Differential pair matching check disabled")
+            return 0
+
+        import re
+        max_mismatch_cfg = dp_cfg.get('max_length_mismatch_by_class', {
+            'USB': 0.5, 'HDMI': 0.3, 'DDR': 5.0, 'HighSpeed': 1.0
+        })
+
+        # Regex patterns for P/N identification — order matters (more specific first)
+        dp_patterns = [
+            re.compile(r'^(.+?)[_\-.](P|\+)$', re.IGNORECASE),
+            re.compile(r'^(.+?)[_\-.](N|\-)$', re.IGNORECASE),
+        ]
+        # Unified: capture base name and polarity
+        dp_regex = re.compile(
+            r'^(.+?)[_\-.](P|N|\+|\-)$', re.IGNORECASE
+        )
+
+        # Accumulate total routed length per net
+        net_lengths = {}   # net_name → total IU
+        net_pos = {}       # net_name → representative PCB position
+        for track in self.board.GetTracks():
+            net = track.GetNet()
+            if not net:
+                continue
+            name = net.GetNetname()
+            if not name:
+                continue
+            net_lengths[name] = net_lengths.get(name, 0) + track.GetLength()
+            if name not in net_pos:
+                net_pos[name] = track.GetCenter()
+
+        # Group into pairs: base_name → {'P': net_name, 'N': net_name}
+        pairs = {}  # base → {'P': name, 'N': name}
+        for net_name in net_lengths:
+            m = dp_regex.match(net_name)
+            if not m:
+                continue
+            base = m.group(1)
+            polarity = m.group(2).upper()
+            pos_key = 'P' if polarity in ('P', '+') else 'N'
+            pairs.setdefault(base, {})[pos_key] = net_name
+
+        # Filter to only complete pairs
+        complete_pairs = {base: v for base, v in pairs.items() if 'P' in v and 'N' in v}
+        if not complete_pairs:
+            self.log("  No differential pairs detected — skipping")
+            return 0
+
+        self.log(f"  Found {len(complete_pairs)} differential pair(s)")
+
         violations = 0
-        self.log(f"TODO: Differential pair matching check - {violations} violations")
+        for base, members in sorted(complete_pairs.items()):
+            p_name = members['P']
+            n_name = members['N']
+            p_len_mm = pcbnew.ToMM(net_lengths.get(p_name, 0))
+            n_len_mm = pcbnew.ToMM(net_lengths.get(n_name, 0))
+            mismatch_mm = abs(p_len_mm - n_len_mm)
+
+            # Determine max allowed mismatch from net class of the P trace
+            net_class = self._resolve_net_class(p_name)
+            max_mismatch = max_mismatch_cfg.get(net_class,
+                           dp_cfg.get('default_max_mismatch_mm', 1.0))
+
+            if mismatch_mm > max_mismatch:
+                violations += 1
+                pos = net_pos.get(p_name, net_pos.get(n_name))
+                safe = base.replace('/', '_').replace('(', '').replace(')', '')
+                group = self.create_group(self.board, "DPMismatch", safe, violations)
+                msg = f"DP LENGTH MISMATCH\n{base}\nP:{p_len_mm:.2f}mm N:{n_len_mm:.2f}mm diff:{mismatch_mm:.2f}mm"
+                self.draw_marker(self.board, pos, msg, self.marker_layer, group)
+                self.log(f"  ❌ {base} ({net_class}): P={p_len_mm:.2f}mm N={n_len_mm:.2f}mm mismatch {mismatch_mm:.2f}mm > {max_mismatch:.2f}mm")
+            else:
+                self.log(f"  ✓ {base}: P={p_len_mm:.2f}mm N={n_len_mm:.2f}mm mismatch {mismatch_mm:.2f}mm ≤ {max_mismatch:.2f}mm")
+
+        self.log(f"Differential pair matching check: {violations} violation(s)")
         return violations
     
     # ========================================================================

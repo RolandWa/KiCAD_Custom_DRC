@@ -1078,3 +1078,65 @@ min_segment_length_mm = 1.0
 
 # Stackup data is automatically read from the .kicad_pcb file (stackup section)
 # Falls back to FR-4 defaults (35μm copper, εr=4.3) if parsing fails
+
+# ======================================================================
+# CHECK 2: Trace Near Plane Edge
+# ======================================================================
+[signal_integrity.trace_near_plane_edge]
+enabled = true
+description = "Flag critical net traces routed too close to their reference plane boundary"
+
+# Minimum distance from trace to reference plane polygon edge (mm)
+min_edge_distance_mm = 3.0
+
+# Net classes to check
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# Net name substrings that identify reference planes (GND/power pours)
+reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND"]
+
+# ======================================================================
+# CHECK 7: Unreferenced Traces
+# ======================================================================
+[signal_integrity.unreferenced_traces]
+enabled = true
+description = "Flag critical net segments not covered by a reference plane on either adjacent layer"
+
+# Maximum total unreferenced length per net before violation (mm)
+max_unreferenced_length_mm = 1.0
+
+# Net classes to check
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# Net name substrings that identify reference planes
+reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND"]
+
+# ======================================================================
+# CHECK 9: Critical Net Isolation (Single-Ended)
+# ======================================================================
+[signal_integrity.critical_net_isolation_se]
+enabled = true
+description = "Flag critical single-ended nets closer than 3W rule to non-ground traces"
+
+# Net classes considered critical for isolation checking
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# Isolation method: 3W rule applies spacing = three_w_multiplier * trace_width
+# Set min_isolation_mm > 0 for a fixed floor independent of trace width
+three_w_multiplier = 3.0
+min_isolation_mm = 0.0
+
+# Net name substrings recognised as ground guard traces (exempt from violation)
+ground_net_patterns = ["GND", "AGND", "DGND", "PGND", "CHASSIS", "PE"]
+
+# ======================================================================
+# CHECK 6: Differential Pair Length Matching
+# ======================================================================
+[signal_integrity.differential_pair_matching]
+enabled = true
+description = "Flag differential pairs whose P and N trace lengths differ beyond tolerance"
+
+# Maximum allowed intra-pair length mismatch per net class (mm)
+# Pairs whose net class is not listed use default_max_mismatch_mm
+max_length_mismatch_by_class = { USB = 0.5, HDMI = 0.3, DDR = 5.0, HighSpeed = 1.0 }
+default_max_mismatch_mm = 1.0
