@@ -352,18 +352,37 @@ class SignalIntegrityChecker:
             if sig_idx < len(copper_layers) - 1:
                 candidate_layers.append(copper_layers[sig_idx + 1])
 
-            # Find minimum distance from trace midpoint to any reference zone boundary
+            # Find minimum distance from trace midpoint to any reference zone boundary.
+            # Uses point-to-segment distance (not vertex-only) to avoid false negatives
+            # when the trace is closest to the middle of a long zone edge.
             mid = track.GetCenter()
+            px, py = mid.x, mid.y
             min_found = None
             for plane_layer in candidate_layers:
                 for outline in zone_outlines.get(plane_layer, []):
                     for poly_idx in range(outline.OutlineCount()):
                         poly = outline.Outline(poly_idx)
-                        for pt_idx in range(poly.PointCount()):
-                            pt = poly.CPoint(pt_idx)
-                            dx = mid.x - pt.x
-                            dy = mid.y - pt.y
-                            dist = (dx * dx + dy * dy) ** 0.5
+                        n_pts = poly.PointCount()
+                        for pt_idx in range(n_pts):
+                            a = poly.CPoint(pt_idx)
+                            b = poly.CPoint((pt_idx + 1) % n_pts)
+                            # Vector AB and AP
+                            abx = b.x - a.x
+                            aby = b.y - a.y
+                            apx = px - a.x
+                            apy = py - a.y
+                            ab_sq = abx * abx + aby * aby
+                            if ab_sq == 0:
+                                # Degenerate zero-length edge — distance to vertex
+                                dist = (apx * apx + apy * apy) ** 0.5
+                            else:
+                                # Parameter t clamped to [0, 1] for segment projection
+                                t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab_sq))
+                                nx = a.x + t * abx
+                                ny = a.y + t * aby
+                                dx = px - nx
+                                dy = py - ny
+                                dist = (dx * dx + dy * dy) ** 0.5
                             if min_found is None or dist < min_found:
                                 min_found = dist
 
@@ -777,8 +796,7 @@ class SignalIntegrityChecker:
             'reference_plane_patterns', ['GND', 'PWR', 'VCC', 'VDD', 'POWER', 'AGND', 'DGND', 'PGND']
         )
 
-        # Build set of copper layers with reference plane coverage per layer
-        # zone_bboxes[layer_id] = list of (xmin, ymin, xmax, ymax, SHAPE_POLY_SET)
+        # Build zone polygon coverage map: layer_id → list of SHAPE_POLY_SET outlines
         zone_polys = {}  # layer_id → list of SHAPE_POLY_SET
         for zone in self.board.Zones():
             net_name = zone.GetNetname()
