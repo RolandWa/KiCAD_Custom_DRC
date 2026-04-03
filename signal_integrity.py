@@ -252,22 +252,22 @@ class SignalIntegrityChecker:
         self.violation_count = 0
         
         # Run individual checks - Reference Plane and Trace Quality
-        self._check_trace_near_plane_edge()
-        self._check_reference_plane_crossing()
-        self._check_reference_plane_changing()
-        self._check_exposed_critical_traces()
-        self._check_net_length()
-        self._check_net_stubs()
-        self._check_unreferenced_traces()
-        self._check_unconnected_via_pads()
-        
+        self.violation_count += self._check_trace_near_plane_edge()
+        self.violation_count += self._check_reference_plane_crossing()
+        self.violation_count += self._check_reference_plane_changing()
+        self.violation_count += self._check_exposed_critical_traces()
+        self.violation_count += self._check_net_length()
+        self.violation_count += self._check_net_stubs()
+        self.violation_count += self._check_unreferenced_traces()
+        self.violation_count += self._check_unconnected_via_pads()
+
         # Run individual checks - Crosstalk and Isolation
-        self._check_critical_net_isolation_single()
-        self._check_critical_net_isolation_differential()
-        self._check_net_coupling()
-        self._check_differential_pair_matching()
-        self._check_differential_running_skew()
-        
+        self.violation_count += self._check_critical_net_isolation_single()
+        self.violation_count += self._check_critical_net_isolation_differential()
+        self.violation_count += self._check_net_coupling()
+        self.violation_count += self._check_differential_pair_matching()
+        self.violation_count += self._check_differential_running_skew()
+
         # Run individual checks - Impedance Control
         self.violation_count += self._check_controlled_impedance()
         
@@ -449,13 +449,69 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Exposed Critical Traces ---")
-        
-        # TODO: Implement outer layer detection
-        # TODO: Calculate total exposed length per critical net
-        # TODO: Flag nets with excessive outer layer routing
-        
+
+        exposed_cfg = self.config.get('exposed_traces', {})
+        if not exposed_cfg.get('enabled', False):
+            self.log("Exposed critical traces check disabled")
+            return 0
+
+        max_exposed_mm = exposed_cfg.get('max_exposed_length_mm', 20.0)
+        critical_classes = exposed_cfg.get('critical_net_classes',
+                                           self.config.get('critical_net_classes', ['HighSpeed', 'Clock']))
+
+        # Resolve outer layer IDs
+        outer_layer_ids = set()
+        for name in ('F.Cu', 'B.Cu'):
+            layer_id = self.board.GetLayerID(name)
+            if layer_id >= 0:
+                outer_layer_ids.add(layer_id)
+
+        if not outer_layer_ids:
+            self.log("⚠ Could not determine outer layers — skipping")
+            return 0
+
+        # Accumulate exposed length per critical net on outer layers
+        net_exposed = {}    # net_name -> total outer-layer length (IU)
+        net_class_map = {}  # net_name -> net class name
+        net_positions = {}  # net_name -> first position found (for marker)
+
+        for track in self.board.GetTracks():
+            if track.GetLayer() not in outer_layer_ids:
+                continue
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class not in critical_classes:
+                continue
+            net_exposed[net_name] = net_exposed.get(net_name, 0) + track.GetLength()
+            net_class_map[net_name] = net_class
+            if net_name not in net_positions:
+                net_positions[net_name] = track.GetStart()
+
+        if not net_exposed:
+            self.log("No critical net traces found on outer layers")
+            return 0
+
         violations = 0
-        self.log(f"TODO: Exposed critical traces check - {violations} violations")
+        for net_name, total_iu in sorted(net_exposed.items()):
+            total_mm = pcbnew.ToMM(total_iu)
+            net_class = net_class_map[net_name]
+            if total_mm > max_exposed_mm:
+                violations += 1
+                pos = net_positions[net_name]
+                safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                group = self.create_group(self.board, "ExposedTrace", safe_name, violations)
+                msg = f"EXPOSED TRACE\n{net_name}\n{total_mm:.1f}mm on outer layer"
+                self.draw_marker(self.board, pos, msg, self.marker_layer, group)
+                self.log(f"  ❌ {net_name} ({net_class}): {total_mm:.1f}mm exposed on outer layers (max {max_exposed_mm:.1f}mm)")
+            else:
+                self.log(f"  ✓ {net_name} ({net_class}): {total_mm:.1f}mm exposed on outer layers")
+
+        self.log(f"Exposed critical traces check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -499,13 +555,62 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Net Length ---")
-        
-        # TODO: Implement net length calculation including vias
-        # TODO: Compare against per-netclass limits
-        # TODO: Special handling for differential pairs
-        
+
+        net_length_cfg = self.config.get('net_length', {})
+        if not net_length_cfg.get('enabled', False):
+            self.log("Net length check disabled")
+            return 0
+
+        max_length_config = net_length_cfg.get('max_length_by_netclass', {
+            'HighSpeed': 150.0, 'Clock': 100.0, 'DDR': 80.0, 'USB': 450.0
+        })
+        if not max_length_config:
+            self.log("No net length limits configured — skipping")
+            return 0
+
+        self.log(f"  Limits: {max_length_config}")
+
+        # Accumulate routed length per net (only for configured net classes)
+        net_lengths = {}   # net_name -> total length (IU)
+        net_class_map = {} # net_name -> net class name
+        net_positions = {} # net_name -> first track start position (for marker)
+
+        for track in self.board.GetTracks():
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class not in max_length_config:
+                continue
+            net_lengths[net_name] = net_lengths.get(net_name, 0) + track.GetLength()
+            net_class_map[net_name] = net_class
+            if net_name not in net_positions:
+                net_positions[net_name] = track.GetStart()
+
+        if not net_lengths:
+            self.log("No nets found matching configured net classes for length check")
+            return 0
+
         violations = 0
-        self.log(f"TODO: Net length check - {violations} violations")
+        for net_name, total_iu in sorted(net_lengths.items()):
+            net_class = net_class_map[net_name]
+            max_mm = max_length_config[net_class]
+            total_mm = pcbnew.ToMM(total_iu)
+            if total_mm > max_mm:
+                violations += 1
+                pos = net_positions[net_name]
+                safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                group = self.create_group(self.board, "NetLength", safe_name, violations)
+                msg = f"NET TOO LONG\n{net_name}\n{total_mm:.1f}mm > {max_mm:.1f}mm"
+                self.draw_marker(self.board, pos, msg, self.marker_layer, group)
+                self.log(f"  ❌ {net_name} ({net_class}): {total_mm:.1f}mm > {max_mm:.1f}mm limit")
+            else:
+                self.log(f"  ✓ {net_name} ({net_class}): {total_mm:.1f}mm ≤ {max_mm:.1f}mm")
+
+        self.log(f"Net length check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -647,13 +752,109 @@ class SignalIntegrityChecker:
         Number of violations found
         """
         self.log("\n--- Checking Unconnected Via Pads ---")
-        
-        # TODO: Implement via layer span detection
-        # TODO: Check connectivity on each internal layer
-        # TODO: Flag vias with unconnected pads on internal layers
-        
+
+        via_cfg = self.config.get('unconnected_via_pads', {})
+        if not via_cfg.get('enabled', False):
+            self.log("Unconnected via pads check disabled")
+            return 0
+
+        check_critical_only = via_cfg.get('check_critical_nets_only', True)
+        critical_classes = via_cfg.get('critical_net_classes',
+                                       self.config.get('critical_net_classes', ['HighSpeed', 'Clock']))
+
+        # Collect internal copper layer IDs
+        outer_layers = {pcbnew.F_Cu, pcbnew.B_Cu}
+        internal_layers = []
+        for layer_id in range(pcbnew.B_Cu + 1):
+            if layer_id not in outer_layers and self.board.GetLayerName(layer_id).endswith('.Cu'):
+                internal_layers.append(layer_id)
+
+        if not internal_layers:
+            self.log("No internal copper layers — skipping (requires multi-layer board)")
+            return 0
+
+        self.log(f"  Internal layers: {[self.board.GetLayerName(l) for l in internal_layers]}")
+
+        # Build set of (layer_id, grid_x, grid_y) for all track endpoints (non-via tracks)
+        SNAP = pcbnew.FromMM(0.01)  # 10 µm snap tolerance
+        track_points = set()
+        for track in self.board.GetTracks():
+            if track.GetClass() in ('PCB_VIA', 'VIA'):
+                continue
+            layer_id = track.GetLayer()
+            for pt in (track.GetStart(), track.GetEnd()):
+                track_points.add((layer_id, pt.x // SNAP, pt.y // SNAP))
+
+        # Build zone coverage map: (layer_id, net_name) -> list of zones
+        zone_map = {}
+        for zone in self.board.GetZones():
+            znet = zone.GetNet()
+            if not znet:
+                continue
+            key = (zone.GetLayer(), znet.GetNetname())
+            zone_map.setdefault(key, []).append(zone)
+
         violations = 0
-        self.log(f"TODO: Unconnected via pads check - {violations} violations")
+        via_checked = 0
+
+        for track in self.board.GetTracks():
+            if track.GetClass() not in ('PCB_VIA', 'VIA'):
+                continue
+
+            net = track.GetNet()
+            if not net:
+                continue
+
+            net_name = net.GetNetname()
+            if check_critical_only and self._resolve_net_class(net_name) not in critical_classes:
+                continue
+
+            # Only through vias span all internal layers
+            try:
+                if track.GetViaType() != pcbnew.VIATYPE_THROUGH:
+                    continue
+            except AttributeError:
+                pass  # If GetViaType() unavailable, assume through-via
+
+            via_checked += 1
+            via_pos = track.GetPosition()
+            pos_grid = (via_pos.x // SNAP, via_pos.y // SNAP)
+
+            unconnected_layers = []
+            for layer_id in internal_layers:
+                # Track endpoint present on this layer at via position?
+                if (layer_id, pos_grid[0], pos_grid[1]) in track_points:
+                    continue
+
+                # Zone on same net covers via position on this layer?
+                zone_key = (layer_id, net_name)
+                covered = False
+                if zone_key in zone_map:
+                    for zone in zone_map[zone_key]:
+                        try:
+                            if zone.Outline().Contains(via_pos):
+                                covered = True
+                                break
+                        except Exception:
+                            pass
+
+                if not covered:
+                    unconnected_layers.append(self.board.GetLayerName(layer_id))
+
+            if unconnected_layers:
+                violations += 1
+                safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                group = self.create_group(self.board, "ViaUnconnected", safe_name, violations)
+                layers_str = ', '.join(unconnected_layers[:2])
+                if len(unconnected_layers) > 2:
+                    layers_str += f' +{len(unconnected_layers) - 2} more'
+                msg = f"FLOATING VIA PAD\n{net_name}\n{layers_str}"
+                self.draw_marker(self.board, via_pos, msg, self.marker_layer, group)
+                pos_mm = f"({pcbnew.ToMM(via_pos.x):.2f}, {pcbnew.ToMM(via_pos.y):.2f})"
+                self.log(f"  ❌ Via {pos_mm}mm [{net_name}]: floating pad on {layers_str}")
+
+        self.log(f"  Checked {via_checked} via(s) on {'critical nets' if check_critical_only else 'all nets'}")
+        self.log(f"Unconnected via pads check: {violations} violation(s)")
         return violations
     
     # ========================================================================
@@ -1196,19 +1397,23 @@ class SignalIntegrityChecker:
         # Get net info list (KiCad API)
         netinfo_list = self.board.GetNetInfo()
         net_count = netinfo_list.GetNetCount()
-        
-        # First pass: Assign nets by net class
+
+        # In KiCad 9+, pattern-based net class assignment means GetNetClassName()
+        # on NETINFO_ITEM always returns "Default" even for pattern-matched nets.
+        # Use self._resolve_net_class() which parses the board file directly.
+
+        # First pass: Assign nets by effective net class
         for net_code in range(net_count):
             net = netinfo_list.GetNetItem(net_code)
             if not net:
                 continue
-            
+
             net_name = net.GetNetname()
             if not net_name or net_name == "":
                 continue
-            
-            net_class_name = net.GetNetClassName()
-            
+
+            net_class_name = self._resolve_net_class(net_name)
+
             if net_class_name in target_impedances:
                 net_to_impedance[net_name] = (target_impedances[net_class_name], f"Net Class '{net_class_name}'")
         
@@ -2154,20 +2359,132 @@ class SignalIntegrityChecker:
             # Don't fail the whole check if highlighting fails
             self.log(f"    Warning: Could not draw segment highlight: {e}")
     
+    def _resolve_net_class(self, net_name: str) -> str:
+        """
+        Resolve the effective net class for a net.
+
+        Uses a cached map built once per checker run.
+
+        Args:
+            net_name: Net name string
+
+        Returns:
+            str: Effective net class name, or 'Default' if unresolved
+        """
+        if not hasattr(self, '_net_class_cache') or self._net_class_cache is None:
+            self._net_class_cache = self._build_net_class_map()
+        return self._net_class_cache.get(net_name, 'Default')
+
+    def _build_net_class_map(self) -> dict:
+        """
+        Build a complete {net_name: class_name} map using the same strategy
+        as clearance_creepage.py (auditor.get_nets_by_class), which is confirmed
+        to work correctly in KiCad 9.
+
+        Strategy:
+        1. Iterate all nets: GetNetClassName() with substring match (handles
+           comma-separated classes like "50R,Default")
+        2. Fall back to board file pattern parsing for any remaining unresolved nets
+
+        Returns:
+            dict: {net_name: class_name}
+        """
+        import re
+        net_class_map = {}
+
+        # --- Source 1: GetNetClassName() with substring match (same as auditor) ---
+        # This is exactly what clearance_creepage.py uses via auditor.get_nets_by_class()
+        # Substring match handles comma-separated cases: "50R,Default" contains "50R"
+        try:
+            all_nets = self.board.GetNetInfo().NetsByName().values()
+            for net in all_nets:
+                net_nm = net.GetNetname()
+                if not net_nm:
+                    continue
+                net_class_str = net.GetNetClassName()  # may be "50R,Default" or "50R" or "Default"
+                if not net_class_str or net_class_str == 'Default':
+                    continue
+                # If comma-separated, take the first non-Default token
+                for token in net_class_str.split(','):
+                    token = token.strip()
+                    if token and token != 'Default':
+                        net_class_map[net_nm] = token
+                        break
+        except Exception as e:
+            self.log(f"  ⚠ Net class scan via GetNetClassName failed: {e}")
+
+        # --- Source 2: Board file pattern parsing for still-unresolved nets ---
+        # KiCad 9 pattern-based assignments may not appear in GetNetClassName() at all
+        try:
+            board_path = self.board.GetFileName()
+            if board_path:
+                content = open(board_path, 'r', encoding='utf-8').read()
+
+                # KiCad 6/7 explicit: (net_class "NAME" ... (add_net "netname"))
+                for nc_block in re.finditer(r'\(net_class\s+"([^"]+)"(.*?)(?=\(net_class\s+|\Z)',
+                                             content, re.DOTALL):
+                    nc_name = nc_block.group(1)
+                    if nc_name == 'Default':
+                        continue
+                    for net_match in re.finditer(r'\(add_net\s+"([^"]+)"\)', nc_block.group(2)):
+                        net_nm = net_match.group(1)
+                        if net_nm not in net_class_map:
+                            net_class_map[net_nm] = nc_name
+
+                # KiCad 8/9 net_settings: (class "NAME" ... (nets "n1" "n2") (pattern "glob"))
+                for class_match in re.finditer(
+                    r'\(class\s+"([^"]+)"(.*?)(?=\s*\(class\s+"|\s*\)\s*\(|\Z)',
+                    content, re.DOTALL
+                ):
+                    nc_name = class_match.group(1)
+                    if nc_name == 'Default':
+                        continue
+                    body = class_match.group(2)
+
+                    # Explicit net names inside (nets ...) block
+                    nets_block = re.search(r'\(nets(.*?)\)', body, re.DOTALL)
+                    if nets_block:
+                        for net_match in re.finditer(r'"([^"]+)"', nets_block.group(1)):
+                            net_nm = net_match.group(1)
+                            if not re.match(r'^[\d.eE+\-]+$', net_nm) and net_nm not in net_class_map:
+                                net_class_map[net_nm] = nc_name
+
+                    # Pattern assignments: (pattern "glob*")
+                    for pat_match in re.finditer(r'\(pattern\s+"([^"]+)"\)', body):
+                        glob = pat_match.group(1)
+                        regex = re.compile(
+                            '^' + re.escape(glob).replace(r'\*', '.*').replace(r'\?', '.') + '$',
+                            re.IGNORECASE
+                        )
+                        all_nets = self.board.GetNetInfo().NetsByName().values()
+                        for net in all_nets:
+                            net_nm = net.GetNetname()
+                            if net_nm and net_nm not in net_class_map and regex.match(net_nm):
+                                net_class_map[net_nm] = nc_name
+
+        except Exception as e:
+            self.log(f"  ⚠ Board file net class parse failed: {e}")
+
+        # Log summary
+        non_default = sorted({v for v in net_class_map.values()})
+        self.log(f"  Net class map: {len(net_class_map)} explicit assignments, classes: {non_default or ['(none — all Default)']}")
+
+        return net_class_map
+
     def _is_critical_net(self, net):
         """
         Check if net belongs to critical net class.
-        
+
         Args:
             net: pcbnew.NETINFO_ITEM
-            
+
         Returns:
             bool: True if net is in critical net classes
         """
         if not net:
             return False
-        
+
         critical_classes = self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
-        net_class = net.GetNetClassName()
-        
+        net_class = self._resolve_net_class(net.GetNetname())
+
         return net_class in critical_classes
