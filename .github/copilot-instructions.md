@@ -20,6 +20,7 @@ python -m py_compile emc_auditor_plugin.py
 
 # Deploy to KiCad plugins directory
 .\sync_to_kicad.ps1
+# Note: Python 3.11+ uses built-in tomllib; Python 3.8–3.10 requires: pip install tomli
 
 # Full test: restart KiCad → open board → run plugin
 # Baseline: 40 violations (via:0, decoupling:9, ground:4, emi:22, clearance:4, signal:1)
@@ -38,7 +39,7 @@ emc_auditor_plugin.py          ← Orchestrator: loads config, runs checkers, sh
 ├── emi_filtering.py           ← Connector filter topology (CISPR 32, IEC 61000)
 ├── ground_plane.py            ← Return path continuity under traces
 ├── clearance_creepage.py      ← IEC60664-1 / IPC2221 safety distances
-├── signal_integrity.py        ← Trace/via integrity checks (partial)
+├── signal_integrity.py        ← Trace/via integrity checks (stub — all methods empty, returns 0 violations)
 └── emc_rules.toml             ← All thresholds and enable/disable flags
 ```
 
@@ -92,7 +93,7 @@ class NewChecker:
 | Units | Always `pcbnew.FromMM()` / `pcbnew.ToMM()` — never raw integers |
 | Markers | Named group `EMC_<CheckType>_<id>_<n>`, circle + optional arrow |
 | Errors | Wrap each checker's `check()` in try/except, fail gracefully with `return 0` |
-| Size | Module: 150–700 lines. Function: ≤ 50 lines. Line: ≤ 100 chars |
+| Size | Module: 150–700 lines (clearance_creepage.py is a documented exception at ~1,440 lines). Function: ≤ 50 lines. Line: ≤ 100 chars |
 
 ## Anti-Patterns
 
@@ -124,4 +125,5 @@ git status --ignored | Select-String -Pattern "sync_to_kicad.ps1|test_config.py"
 | Power trace width | [TRACE_WIDTH.md](../TRACE_WIDTH.md) |
 | Decoupling capacitor proximity | [DECOUPLING.md](../DECOUPLING.md) |
 | Clearance quick reference | [CLEARANCE_QUICK_REF.md](../CLEARANCE_QUICK_REF.md) |
+| Clearance vs. creepage visual | [CLEARANCE_VS_CREEPAGE_VISUAL.md](../CLEARANCE_VS_CREEPAGE_VISUAL.md) |
 | Manufacturer DRU presets | [JLCPCB/](../JLCPCB/), [PCBWAY/](../PCBWAY/) (standalone, not used by plugin) |
