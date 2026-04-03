@@ -1005,13 +1005,61 @@ description = "Mains to Ground"
 # ======================================================================
 # SIGNAL INTEGRITY RULES
 # ======================================================================
+[signal_integrity]
+enabled = true
+description = "Signal integrity checks — controls all SI sub-checks below"
+
+# Default critical net classes (used by checks that don't define their own)
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# ======================================================================
+# CHECK 5: Net Length Maximum
+# ======================================================================
+[signal_integrity.net_length]
+enabled = true
+description = "Flag nets exceeding maximum routed length per net class"
+
+# Maximum routed length per net class (mm). Add/remove entries as needed.
+# USB 2.0: 450mm max recommended. DDR4: strict topology constraints.
+max_length_by_netclass = { HighSpeed = 150.0, Clock = 100.0, DDR = 80.0, USB = 450.0, 50R = 100.0 }
+
+# ======================================================================
+# CHECK 4: Exposed Critical Traces
+# ======================================================================
+[signal_integrity.exposed_traces]
+enabled = true
+description = "Flag critical net traces on outer layers exceeding allowed exposed length"
+
+# Maximum total length on outer layers (F.Cu / B.Cu) per critical net (mm)
+# Exceeding this suggests the trace should be buried on an inner layer (stripline)
+max_exposed_length_mm = 20.0
+
+# Net classes considered critical for this check
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# ======================================================================
+# CHECK 8: Unconnected Via Pads
+# ======================================================================
+[signal_integrity.unconnected_via_pads]
+enabled = true
+description = "Flag through vias that have floating (unconnected) pads on internal layers"
+
+# True = only check nets in critical_net_classes. False = check all nets.
+check_critical_nets_only = true
+
+# Net classes to check when check_critical_nets_only = true
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI"]
+
+# ======================================================================
+# CHECK 14: Controlled Impedance
+# ======================================================================
 [signal_integrity.impedance]
 enabled = true
 description = "Controlled impedance verification using analytical transmission line formulas"
 
 # Target impedances per KiCad Net Class (ohms)
 # Net Class names from KiCad design → target impedance
-target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 50.0 }
+target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 50.0, 50R= 50.0 }
 
 # Impedance tolerance (ohms) - applied to all net classes
 # Example: USB 90Ω ± 5Ω → acceptable range 85-95Ω, HighSpeed 50Ω ± 5Ω → 45-55Ω

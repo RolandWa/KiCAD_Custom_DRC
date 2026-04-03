@@ -422,7 +422,7 @@ class EMCAuditorPlugin(pcbnew.ActionPlugin):
         
         # 6. Signal Integrity Verification (if enabled)
         signal_integrity_cfg = self.config.get('signal_integrity', {})
-        if signal_integrity_cfg.get('impedance', {}).get('enabled', False):
+        if signal_integrity_cfg.get('enabled', False):
             print("\n" + "="*70)
             print("STARTING SIGNAL INTEGRITY CHECK")
             print("="*70)
