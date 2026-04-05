@@ -1059,7 +1059,11 @@ description = "Controlled impedance verification using analytical transmission l
 
 # Target impedances per KiCad Net Class (ohms)
 # Net Class names from KiCad design → target impedance
-target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 50.0, 50R= 50.0 }
+target_impedance_by_class = { USB = 90.0, HDMI = 100.0, DDR = 50.0, HighSpeed = 50.0, 50R = 50.0, T1S = 50.0, T1S_diff = 100.0 }
+
+# Net classes treated as differential pairs (Z_diff is calculated instead of Z0)
+# These nets must have a detected P/N partner to trigger differential calculation.
+differential_net_classes = ["USB", "HDMI", "LVDS", "CAN", "RS485", "PCIe", "PCIE", "T1S_diff"]
 
 # Impedance tolerance (ohms) - applied to all net classes
 # Example: USB 90Ω ± 5Ω → acceptable range 85-95Ω, HighSpeed 50Ω ± 5Ω → 45-55Ω
@@ -1103,10 +1107,14 @@ enabled = true
 description = "Flag critical net segments not covered by a reference plane on either adjacent layer"
 
 # Maximum total unreferenced length per net before violation (mm)
+# The checker scans adjacent copper layers (above/below the signal layer) for GND/power zones.
+# On a 2-layer board with GND pour on B.Cu and signal on F.Cu this is correctly detected.
 max_unreferenced_length_mm = 1.0
 
-# Net classes to check
-critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+# Net classes to check.
+# NOTE: Do NOT add impedance-only classes (e.g. '50R') here if those traces are intentionally
+# placed in isolated/HV regions with no reference plane by design (e.g. HV attenuator boards).
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI"]
 
 # Net name substrings that identify reference planes
 reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND"]

@@ -39,16 +39,16 @@ PHASE 1 - EASY (Basic Geometry & Filtering)
 
 PHASE 2 - MEDIUM (Spatial Analysis & Pattern Matching)
 ────────────────────────────────────────────────────────────────────────────
-□ CHECK 14: Controlled Impedance Verification
-  Difficulty: ★★★☆☆
-  - Use analytical formulas (no FEM needed!)
-  - ✅ STACKUP READING: Fully implemented! Reads from KiCad 7.0+ board files
-  - ✅ FORMULAS: Microstrip, Stripline, CPW, Differential all implemented
-  - Extract geometry: trace width, thickness, dielectric height, Er
-  - Calculate impedance using IPC-2141/Wadell formulas
-  - Transmission line types: Microstrip, Stripline, Coplanar
-  - Fast calculation with 5-10% accuracy (sufficient for DRC)
-  - Estimated time: 4-5 hours remaining (stackup API done!)
+☑ CHECK 14: Controlled Impedance Verification
+  ✅ FULLY IMPLEMENTED
+  - Net class + pattern-based net discovery
+  - Stackup reading from .kicad_pcb file (epsilon_r, copper thickness)
+  - Microstrip: IPC-2141 formula with effective-width correction
+  - Stripline: Wadell formula (symmetric symmetric planes)
+  - Differential: Z_diff = 2*Z0*sqrt(1 - 0.48*exp(-0.96*S/H))
+  - DP detection via regex (_identify_differential_pairs)
+  - Spatial index for fast partner-track lookup
+  - PCB markers + segment highlights on violations
 
 □ CHECK 12: Differential Pair Length Matching
   Difficulty: ★★★☆☆
@@ -796,17 +796,22 @@ class SignalIntegrityChecker:
             'reference_plane_patterns', ['GND', 'PWR', 'VCC', 'VDD', 'POWER', 'AGND', 'DGND', 'PGND']
         )
 
-        # Build zone polygon coverage map: layer_id → list of SHAPE_POLY_SET outlines
-        zone_polys = {}  # layer_id → list of SHAPE_POLY_SET
+        # Build zone map: layer_id → list of (ZONE, SHAPE_POLY_SET outline)
+        # Stores the zone outline polygon so we can test if a point is inside the reference
+        # plane RULE AREA (not just where fill copper happens to exist after clearances).
+        # This is the correct semantic: "is there a defined reference plane above/below this trace?"
+        zone_polys = {}  # layer_id → list of (ZONE, outline_poly)
         for zone in self.board.Zones():
             net_name = zone.GetNetname()
             if not any(p.upper() in net_name.upper() for p in gnd_patterns):
                 continue
             layer_id = zone.GetLayer()
-            outline = zone.Outline()
-            if outline is None:
-                continue
-            zone_polys.setdefault(layer_id, []).append(outline)
+            try:
+                outline = zone.Outline()
+                if outline is not None:
+                    zone_polys.setdefault(layer_id, []).append(outline)
+            except Exception:
+                pass
 
         if not zone_polys:
             self.log("  No reference plane zones found — skipping")
@@ -814,6 +819,10 @@ class SignalIntegrityChecker:
 
         copper_layers = [l for l in range(pcbnew.F_Cu, pcbnew.B_Cu + 1)
                          if self.board.IsLayerEnabled(l)]
+
+        # Sample step for multi-point coverage: every 0.5 mm along each track segment.
+        # This avoids false positives from a single midpoint landing just outside a zone boundary.
+        sample_step_iu = pcbnew.FromMM(0.5)
 
         violations = 0
         net_unref = {}   # net_name → total unreferenced length (IU)
@@ -838,25 +847,51 @@ class SignalIntegrityChecker:
             if sig_idx < 0:
                 continue
 
-            # Check if at least one adjacent layer has a reference plane covering the midpoint
-            mid = track.GetCenter()
-            has_reference = False
+            # Adjacent reference layers (above and below in stackup order)
+            candidate_layers = []
             for offset in (-1, 1):
-                adj_idx = sig_idx + offset
-                if 0 <= adj_idx < len(copper_layers):
-                    plane_layer = copper_layers[adj_idx]
-                    for outline in zone_polys.get(plane_layer, []):
-                        if outline.Contains(mid):
-                            has_reference = True
-                            break
-                if has_reference:
-                    break
+                cand_idx = sig_idx + offset
+                if 0 <= cand_idx < len(copper_layers):
+                    candidate_layers.append(copper_layers[cand_idx])
 
-            if not has_reference:
-                net_unref[net_name] = net_unref.get(net_name, 0) + track.GetLength()
+            seg_start = track.GetStart()
+            seg_end = track.GetEnd()
+            seg_len = track.GetLength()
+            if seg_len == 0:
+                continue
+
+            # Sample multiple points along the segment and accumulate unreferenced sub-length.
+            num_samples = max(2, int(round(seg_len / sample_step_iu)))
+            step_iu = seg_len / num_samples
+            unref_for_track = 0  # IU
+
+            for i in range(num_samples + 1):
+                t = i / num_samples
+                px = int(seg_start.x + (seg_end.x - seg_start.x) * t)
+                py = int(seg_start.y + (seg_end.y - seg_start.y) * t)
+                pt = pcbnew.VECTOR2I(px, py)
+
+                referenced = False
+                for plane_layer in candidate_layers:
+                    for outline in zone_polys.get(plane_layer, []):
+                        try:
+                            if outline.Contains(pt):
+                                referenced = True
+                                break
+                        except Exception:
+                            pass
+                    if referenced:
+                        break
+
+                if not referenced:
+                    # Attribute one step-worth of length to this sample point
+                    unref_for_track += step_iu
+
+            if unref_for_track > 0:
+                net_unref[net_name] = net_unref.get(net_name, 0) + unref_for_track
                 net_class_cache[net_name] = net_class
                 if net_name not in net_positions:
-                    net_positions[net_name] = mid
+                    net_positions[net_name] = track.GetCenter()
 
         max_unref_iu = pcbnew.FromMM(max_unref_mm)
         for net_name, total_iu in sorted(net_unref.items()):
@@ -1480,9 +1515,6 @@ class SignalIntegrityChecker:
         """
         Verify trace impedance using analytical formulas (geometry-based).
         
-        TODO: Implementation needed
-        
-        Description:
         High-speed signals require controlled impedance to minimize reflections.
         Instead of full-wave EM simulation (FEM), use analytical formulas from
         transmission line theory. Accuracy is 5-10% which is sufficient for DRC
@@ -1790,7 +1822,32 @@ class SignalIntegrityChecker:
             self.log("⚠ No nets found matching configured classes or patterns")
             self.log("  Tip: Assign nets to net classes (USB, HDMI, DDR, HighSpeed) or use common naming patterns")
             return 0
-        
+
+        # --- Differential pair setup ---
+        differential_classes = set(impedance_config.get(
+            'differential_net_classes',
+            ['USB', 'HDMI', 'LVDS', 'CAN', 'RS485', 'PCIE', 'PCIe']
+        ))
+        dp_pairs = self._identify_differential_pairs()   # base -> (P_net, N_net)
+        dp_partner = {}   # net_name -> partner_net_name
+        for base, (p_net, n_net) in dp_pairs.items():
+            dp_partner[p_net] = n_net
+            dp_partner[n_net] = p_net
+
+        # Build spatial index for partner track lookup (only for DP nets we care about).
+        # net_name -> layer_id -> [PCB_TRACK]
+        from collections import defaultdict
+        net_layer_tracks = defaultdict(lambda: defaultdict(list))
+        dp_nets_to_index = {n for n in net_to_impedance if n in dp_partner}
+        dp_partner_nets = {dp_partner[n] for n in dp_nets_to_index}
+        nets_to_index = dp_nets_to_index | dp_partner_nets
+        if nets_to_index:
+            for _t in self.board.GetTracks():
+                if isinstance(_t, pcbnew.PCB_TRACK):
+                    _tn = _t.GetNet()
+                    if _tn and _tn.GetNetname() in nets_to_index:
+                        net_layer_tracks[_tn.GetNetname()][_t.GetLayer()].append(_t)
+
         # Get all tracks from board
         tracks = self.board.GetTracks()
         
@@ -1871,7 +1928,42 @@ class SignalIntegrityChecker:
             
             # DEBUG markers removed - keeping PCB view clean
             # All detailed info available in report log below
-            
+
+            # --- Differential impedance override ---
+            # If this net class is differential and we can locate the DP partner
+            # on the same layer, compute Z_diff instead of Z0_single.
+            net_class_name = self._resolve_net_class(net_name)
+            is_differential = (
+                net_class_name in differential_classes
+                and net_name in dp_partner
+            )
+            if is_differential:
+                partner_name = dp_partner[net_name]
+                partner_tracks = net_layer_tracks[partner_name].get(layer_id, [])
+                if partner_tracks:
+                    seg_mid = track.GetCenter()
+                    closest_partner = min(
+                        partner_tracks,
+                        key=lambda t: self.get_distance(seg_mid, t.GetCenter())
+                    )
+                    center_dist_mm = pcbnew.ToMM(
+                        self.get_distance(seg_mid, closest_partner.GetCenter())
+                    )
+                    partner_width_mm = pcbnew.ToMM(closest_partner.GetWidth())
+                    # Edge-to-edge gap = center distance − mean of both half-widths
+                    S_mm = center_dist_mm - (W_mm + partner_width_mm) / 2.0
+                    if S_mm > 0 and H_mm > 0:
+                        Z0_calc = self._calculate_differential_impedance(Z0_calc, S_mm, H_mm)
+                    else:
+                        self.log(f"  ⚠ {net_name}: DP partner geometry invalid "
+                                 f"(S={S_mm:.3f}mm) — reporting single-ended Z0")
+                        is_differential = False
+                else:
+                    self.log(f"  ⚠ {net_name}: differential class but partner "
+                             f"'{partner_name}' not on layer {layer_name} — "
+                             f"reporting single-ended Z0")
+                    is_differential = False
+
             # Check tolerance
             error = abs(Z0_calc - Z0_target)
             
@@ -1879,9 +1971,10 @@ class SignalIntegrityChecker:
                 violations += 1
                 percent_error = (error / Z0_target) * 100
                 
+                z_type = "Z_diff" if is_differential else "Z0"
                 # Create compact PCB marker
-                violation_msg = f"❌ {net_name}\nZ0: {Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω)"
-                
+                violation_msg = f"❌ {net_name}\n{z_type}: {Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω)"
+
                 self.draw_marker(
                     self.board,
                     position,
@@ -1889,15 +1982,16 @@ class SignalIntegrityChecker:
                     self.marker_layer,
                     violation_group
                 )
-                
+
                 # Draw highlight on the problematic segment for easy visualization
                 self._draw_segment_highlight(track, violation_group, net_name, Z0_calc, Z0_target)
-                
+
                 # Detailed info in report log
-                self.log(f"  ❌ {net_name}: Z0={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω ±{tolerance_ohms}Ω) ERROR: {error:.1f}Ω ({percent_error:.1f}%)")
+                self.log(f"  ❌ {net_name}: {z_type}={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω ±{tolerance_ohms}Ω) ERROR: {error:.1f}Ω ({percent_error:.1f}%)")
                 self.log(f"     Layer: {layer_name} ({tline_type}), Width: {W_mm:.3f}mm, H: {H_mm:.3f}mm, t: {t_um:.1f}µm, εr: {Er:.2f}")
             else:
-                self.log(f"  ✓ {net_name}: Z0={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω) PASS")
+                z_type = "Z_diff" if is_differential else "Z0"
+                self.log(f"  ✓ {net_name}: {z_type}={Z0_calc:.1f}Ω (target {Z0_target:.1f}Ω) PASS")
         
         # Report summary
         self.log(f"\nChecked {checked_segments} segments on controlled impedance nets")
@@ -1995,9 +2089,53 @@ class SignalIntegrityChecker:
             dict: Mapping of base name to (P_net, N_net) tuple
                   Example: {'USB_D': (net_USB_DP, net_USB_DN)}
         """
-        # TODO: Parse net names for P/N, +/-, true/complement patterns
-        # Common patterns: _P/_N, _DP/_DN, +/-, _T/_C, _TRUE/_COMP
-        return {}
+        import re
+
+        # Positive polarity patterns: separator + P-side suffix
+        P_PATTERN = re.compile(
+            r'^(.+?)[_\-\.](P|DP|D\+|TRUE|T|POS|PLUS|TX|TXP|RXP)$',
+            re.IGNORECASE
+        )
+        # Negative polarity patterns: same separator + N-side suffix
+        N_PATTERN = re.compile(
+            r'^(.+?)[_\-\.](N|DN|D\-|COMP|C|NEG|MINUS|TXN|RXN)$',
+            re.IGNORECASE
+        )
+
+        p_nets = {}   # base_name -> net_name
+        n_nets = {}   # base_name -> net_name
+
+        netinfo = self.board.GetNetInfo()
+        for net_code in range(netinfo.GetNetCount()):
+            net = netinfo.GetNetItem(net_code)
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+
+            m = P_PATTERN.match(net_name)
+            if m:
+                base = m.group(1).upper()
+                # Prefer longer base name if duplicate (e.g. USB_D preferred over USB)
+                if base not in p_nets or len(net_name) > len(p_nets[base]):
+                    p_nets[base] = net_name
+                continue
+
+            m = N_PATTERN.match(net_name)
+            if m:
+                base = m.group(1).upper()
+                if base not in n_nets or len(net_name) > len(n_nets[base]):
+                    n_nets[base] = net_name
+
+        pairs = {}
+        for base in p_nets:
+            if base in n_nets:
+                pairs[base] = (p_nets[base], n_nets[base])
+
+        if pairs:
+            self.log(f"  Differential pairs detected: {list(pairs.keys())}")
+        return pairs   # {base_name: (P_net_name, N_net_name)}
     
     def _find_parallel_segments(self, segment, max_distance, angular_tolerance=10):
         """
@@ -2076,10 +2214,10 @@ class SignalIntegrityChecker:
     
     def _calculate_stripline_impedance(self, W_mm, b_mm, t_um, Er):
         """
-        Calculate stripline impedance (symmetric between two planes).
-        
-        TODO: Implementation needed
-        
+        Calculate stripline impedance (symmetric between two planes) using Wadell formula.
+        For W/b < 0.35: Z0 = (60/√εr) × ln(4b / (0.67π × W × (0.8 + t/W)))
+        For W/b >= 0.35: Z0 = 94.15/√εr / (W/b + 1.11 × √(0.81 + t/b))
+
         Args:
             W_mm: Trace width in mm
             b_mm: Total height between ground planes in mm
@@ -2242,10 +2380,9 @@ class SignalIntegrityChecker:
     
     def _calculate_cpw_impedance(self, W_mm, S_mm, H_mm, Er, has_ground_plane=False):
         """
-        Calculate coplanar waveguide impedance.
-        
-        TODO: Implementation needed (requires elliptic integral)
-        
+        Calculate coplanar waveguide impedance using elliptic integral approximation.
+        Supports CPW (no ground plane, Er_eff = (Er+1)/2) and CPWG (with ground plane).
+
         Args:
             W_mm: Center trace width in mm
             S_mm: Gap to ground traces in mm
@@ -2286,9 +2423,8 @@ class SignalIntegrityChecker:
     def _detect_transmission_line_type(self, layer_name):
         """
         Detect transmission line type based on layer position.
-        
-        TODO: Implementation needed
-        
+        Outer layers (F.Cu, B.Cu) → microstrip; inner layers (InX.Cu) → stripline.
+
         Args:
             layer_name: KiCad layer name (e.g., 'F.Cu', 'In1.Cu')
             

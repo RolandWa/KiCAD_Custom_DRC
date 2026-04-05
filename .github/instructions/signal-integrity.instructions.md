@@ -5,40 +5,39 @@ applyTo: "signal_integrity.py"
 
 # Signal Integrity Checker — Implementation Guide
 
-`signal_integrity.py` is a **stub module** — the class skeleton and dependency injection are in place, but all `_check_*()` methods are empty and the module always returns 0 violations. Implement checks using the phased roadmap below.
+`signal_integrity.py` (~2,400 lines) has Phases 1–2 largely implemented. Several `_check_*()` methods carry a stale `TODO: Implementation needed` docstring but contain working code — **read the method body before writing new code**. Phases 3–4 checks are genuine stubs that return 0.
 
-## Implementation Roadmap
-
-Work Phase 1 → Phase 4 in order. Each phase's checks are prerequisites for later phases.
+## Implementation Status
 
 ### Phase 1 — Easy (Basic Geometry & Filtering)
-| Check | Method | Difficulty | Est. Time |
-|-------|--------|-----------|-----------|
-| Net Length Max | `_check_net_length()` | ★☆☆☆☆ | 2–3 h |
-| Exposed Critical Traces | `_check_exposed_critical_traces()` | ★★☆☆☆ | 3–4 h |
-| Unconnected Via Pads | `_check_unconnected_via_pads()` | ★★☆☆☆ | 4–5 h |
+| Check | Method | Status |
+|-------|--------|--------|
+| Net Length Max | `_check_net_length()` | ✅ Implemented |
+| Exposed Critical Traces | `_check_exposed_critical_traces()` | ✅ Implemented |
+| Net Stub | `_check_net_stubs()` | ❌ Stub — implement next |
+| Unconnected Via Pads | `_check_unconnected_via_pads()` | ✅ Implemented |
 
 ### Phase 2 — Medium (Spatial Analysis)
-| Check | Method | Difficulty | Est. Time |
-|-------|--------|-----------|-----------|
-| Controlled Impedance | `_check_controlled_impedance()` | ★★★☆☆ | 4–5 h (stackup API already done) |
-| Differential Pair Length Match | `_check_differential_pair_length()` | ★★★☆☆ | 5–6 h |
-| Critical Net Isolation (SE) | `_check_critical_net_isolation_se()` | ★★★☆☆ | 6–8 h |
-| Trace Near Plane Edge | `_check_trace_near_plane_edge()` | ★★★☆☆ | 6–8 h |
-| Unreferenced Traces | `_check_unreferenced_traces()` | ★★★☆☆ | 7–9 h |
+| Check | Method | Status |
+|-------|--------|--------|
+| Trace Near Plane Edge | `_check_trace_near_plane_edge()` | ✅ Implemented |
+| Unreferenced Traces | `_check_unreferenced_traces()` | ✅ Implemented |
+| Critical Net Isolation (SE) | `_check_critical_net_isolation_single()` | ✅ Implemented |
+| Controlled Impedance | `_check_controlled_impedance()` | ✅ Implemented (microstrip + stripline + differential) |
 
 ### Phase 3 — Advanced (Complex Geometry)
-| Check | Method | Difficulty | Est. Time |
-|-------|--------|-----------|-----------|
-| Crosstalk / Net Coupling | `_check_net_coupling()` | ★★★★☆ | 10–12 h |
-| Net Stub | `_check_net_stub()` | ★★★★☆ | 10–12 h |
-| Critical Net Isolation (Diff) | `_check_critical_net_isolation_diff()` | ★★★★☆ | 8–10 h |
+| Check | Method | Status |
+|-------|--------|--------|
+| Critical Net Isolation (Diff) | `_check_critical_net_isolation_differential()` | ❌ Stub |
+| Crosstalk / Net Coupling | `_check_net_coupling()` | ❌ Stub |
+| Differential Pair Length Match | `_check_differential_pair_matching()` | ❌ Stub |
+| Differential Running Skew | `_check_differential_running_skew()` | ❌ Stub |
 
 ### Phase 4 — Expert (Multi-Layer)
-| Check | Method | Difficulty | Est. Time |
-|-------|--------|-----------|-----------|
-| Reference Plane Crossing | `_check_reference_plane_crossing()` | ★★★★★ | 12–15 h |
-| Reference Plane Changing | `_check_reference_plane_changing()` | ★★★★★ | 12–15 h |
+| Check | Method | Status |
+|-------|--------|--------|
+| Reference Plane Crossing | `_check_reference_plane_crossing()` | ❌ Stub |
+| Reference Plane Changing | `_check_reference_plane_changing()` | ❌ Stub |
 
 ## pcbnew API Patterns
 

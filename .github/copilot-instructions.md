@@ -15,18 +15,40 @@
 ## Build / Test / Deploy
 
 ```powershell
-# Syntax check (no KiCad needed)
-python -m py_compile emc_auditor_plugin.py
+# 1. Syntax check (no KiCad needed)
+python -c "import ast; ast.parse(open('signal_integrity.py', encoding='utf-8').read()); print('OK')"
+# Or: python -m py_compile emc_auditor_plugin.py
 
-# Deploy to KiCad plugins directory
+# 2. Deploy to KiCad plugins directory (copies all 9 files + clears __pycache__)
 .\sync_to_kicad.ps1
 # Note: Python 3.11+ uses built-in tomllib; Python 3.8–3.10 requires: pip install tomli
 
-# Full test: restart KiCad → open board → run plugin
-# Baseline: 40 violations (via:0, decoupling:9, ground:4, emi:22, clearance:4, signal:1)
+# 3. Launch KiCad 9.0 — plugin reloads automatically on next run
+Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
+# Or with full debug logging + PCB screenshots (uses launch_kicad_debug.ps1 pattern):
+$env:ORTHO_DEBUG = '1'; Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
+
+# 4. In KiCad: open board → PCB Editor → Tools → External Plugins → EMC Auditor
+# Full test: baseline = 40 violations (via:0, decoupling:9, ground:4, emi:22, clearance:4, signal:1+)
+```
+
+**Deploy workflow (one-liner):**
+```powershell
+python -c "import ast; ast.parse(open('signal_integrity.py',encoding='utf-8').read())" && .\sync_to_kicad.ps1
 ```
 
 No automated test suite yet. Validation is manual against the baseline board.
+
+### Config files — two copies to keep in sync
+| File | Purpose |
+|------|---------|
+| `emc_rules.toml` (repo) | Source of truth — edit this |
+| `plugins/emc_rules.toml` (KiCad) | Live copy — overwritten by `sync_to_kicad.ps1` |
+
+The `PluginsDir` in `sync_to_kicad.ps1` points to:
+`C:\Users\<YourUsername>\<OneDrive>\Simulation tools\KiCad\9.0\3rdparty\plugins`
+
+**Never edit the KiCad copy directly** — it will be overwritten on next sync.
 
 ## Architecture
 
@@ -39,7 +61,7 @@ emc_auditor_plugin.py          ← Orchestrator: loads config, runs checkers, sh
 ├── emi_filtering.py           ← Connector filter topology (CISPR 32, IEC 61000)
 ├── ground_plane.py            ← Return path continuity under traces
 ├── clearance_creepage.py      ← IEC60664-1 / IPC2221 safety distances
-├── signal_integrity.py        ← Trace/via integrity checks (stub — all methods empty, returns 0 violations)
+├── signal_integrity.py        ← Trace/via integrity checks (~2,400 lines; Phases 1–2 implemented, Phases 3–4 partially stubbed)
 └── emc_rules.toml             ← All thresholds and enable/disable flags
 ```
 
@@ -93,7 +115,7 @@ class NewChecker:
 | Units | Always `pcbnew.FromMM()` / `pcbnew.ToMM()` — never raw integers |
 | Markers | Named group `EMC_<CheckType>_<id>_<n>`, circle + optional arrow |
 | Errors | Wrap each checker's `check()` in try/except, fail gracefully with `return 0` |
-| Size | Module: 150–700 lines (clearance_creepage.py is a documented exception at ~1,440 lines). Function: ≤ 50 lines. Line: ≤ 100 chars |
+| Size | Module: 150–700 lines (clearance_creepage.py ~2,180 lines and signal_integrity.py ~2,400 lines are documented exceptions). Function: ≤ 50 lines. Line: ≤ 100 chars |
 
 ## Anti-Patterns
 
