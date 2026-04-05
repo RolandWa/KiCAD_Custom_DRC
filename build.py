@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Directory name must match what KiCad's plugin loader expects.
 # Using underscore form (not dots) so it's a valid Python identifier for import.
 PLUGIN_DIR_NAME = "com_github_RolandWa_emc_auditor"
-PLUGIN_IDENTIFIER = "com.github.RolandWa.emc_auditor"
+PLUGIN_IDENTIFIER = "com.github.RolandWa.emc.auditor"
 
 # Python source modules live under src/; assets at repo root.
 # Each entry is (repo_relative_path, destination_filename_in_package).
@@ -59,6 +59,8 @@ PLUGIN_MODULES = [
     ("src/via_stitching.py",       "via_stitching.py"),
     ("emc_rules.toml",             "emc_rules.toml"),
     ("emc_icon.png",               "emc_icon.png"),
+    ("icon-24.png",                "icon-24.png"),
+    ("icon-64.png",                "icon-64.png"),
 ]
 
 
@@ -194,6 +196,7 @@ from emc_auditor_plugin import EMCAuditorPlugin  # noqa: F401 (side-effect impor
             "$schema": "https://go.kicad.org/pcm/schemas/v1",
             "name": "EMC Auditor",
             "description": "EMC/DRC verification plugin for KiCad. Checks IEC60664-1 clearance/creepage, signal integrity, controlled impedance, differential pairs, and more.",
+            "icon": "icon-64.png",
             "description_full": (
                 "EMC Auditor is a KiCad 9.0+ plugin that runs a comprehensive suite of "
                 "EMC and DRC checks on your PCB: IEC60664-1 clearance & creepage with "
@@ -240,6 +243,8 @@ from emc_auditor_plugin import EMCAuditorPlugin  # noqa: F401 (side-effect impor
             "signal_integrity.py",
             "emc_rules.toml",
             "emc_icon.png",
+            "icon-24.png",
+            "icon-64.png",
             "metadata.json",
         ]
         missing = [f for f in required if not (self.package_dir / f).exists()]
@@ -278,15 +283,21 @@ from emc_auditor_plugin import EMCAuditorPlugin  # noqa: F401 (side-effect impor
             # metadata.json at ZIP root (required by PCM)
             zf.write(self.package_dir / "metadata.json", "metadata.json")
 
-            # All package files under plugins/<PLUGIN_DIR_NAME>/
-            prefix = f"plugins/{PLUGIN_DIR_NAME}"
+            # Icon at resources/icon.png (PCM display icon in manager UI)
+            icon_src = self.package_dir / "icon-64.png"
+            if icon_src.exists():
+                zf.write(icon_src, "resources/icon.png")
+
+            # All package files directly under plugins/
+            # KiCad PCM extracts plugins/ content into plugins/<identifier_dir>/
+            # so files must NOT have an extra subdirectory level here.
             for file_path in sorted(self.package_dir.rglob("*")):
                 if not file_path.is_file():
                     continue
                 if "__pycache__" in file_path.parts:
                     continue
                 rel = file_path.relative_to(self.package_dir)
-                zf.write(file_path, f"{prefix}/{rel.as_posix()}")
+                zf.write(file_path, f"plugins/{rel.as_posix()}")
 
             file_count = len(zf.namelist())
 

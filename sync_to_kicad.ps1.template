@@ -1,0 +1,108 @@
+# EMC Auditor Plugin - Sync to KiCad (TEMPLATE)
+# Copy this file to sync_to_kicad.ps1 and customize the $PluginsDir path
+# Version: 1.3.0 (Updated for modular architecture)
+
+$RepoDir = $PSScriptRoot
+
+# CUSTOMIZE THIS PATH for your KiCad installation
+# Examples:
+#   Windows: "C:\Users\<YourUsername>\Documents\KiCad\9.0\3rdparty\plugins"
+#   Or OneDrive: "C:\Users\<YourUsername>\OneDrive - <Company>\Path\To\KiCad\9.0\3rdparty\plugins"
+$PluginsDir = "CHANGE_THIS_TO_YOUR_KICAD_PLUGINS_PATH"
+
+Write-Host "`n🔄 Synchronizing EMC Auditor Plugin to KiCad...`n" -ForegroundColor Cyan
+
+# Verify plugin directory is configured
+if ($PluginsDir -eq "CHANGE_THIS_TO_YOUR_KICAD_PLUGINS_PATH") {
+    Write-Host "❌ ERROR: Please configure your KiCad plugins directory!" -ForegroundColor Red
+    Write-Host "`nOpen sync_to_kicad.ps1 and update the `$PluginsDir variable." -ForegroundColor Yellow
+    Write-Host "`nExample paths:" -ForegroundColor Cyan
+    Write-Host "  Windows Standard:  C:\Users\<YourUsername>\Documents\KiCad\9.0\3rdparty\plugins" -ForegroundColor Gray
+    Write-Host "  Windows OneDrive:  C:\Users\<YourUsername>\OneDrive\<Path>\KiCad\9.0\3rdparty\plugins" -ForegroundColor Gray
+    Write-Host "  Linux:             ~/.local/share/kicad/9.0/3rdparty/plugins" -ForegroundColor Gray
+    Write-Host "  macOS:             ~/Library/Application Support/kicad/9.0/3rdparty/plugins`n" -ForegroundColor Gray
+    exit 1
+}
+
+# Verify plugin directory exists
+if (-not (Test-Path $PluginsDir)) {
+    Write-Host "❌ ERROR: KiCad plugins directory not found!" -ForegroundColor Red
+    Write-Host "   Path: $PluginsDir" -ForegroundColor Yellow
+    Write-Host "`nPlease verify the path is correct or create the directory.`n" -ForegroundColor Yellow
+    exit 1
+}
+
+# Plugin package subdirectory (must match build.py PLUGIN_DIR_NAME)
+$PluginDirName = "com_github_RolandWa_emc_auditor"
+$PluginDir = Join-Path $PluginsDir $PluginDirName
+
+# Ensure the plugin package subdirectory is clean (no stale nested dirs from PCM)
+if (Test-Path $PluginDir) {
+    Remove-Item $PluginDir -Recurse -Force
+    Write-Host "🗑  Cleared stale plugin dir" -ForegroundColor Gray
+}
+New-Item -ItemType Directory -Path $PluginDir | Out-Null
+Write-Host "📁 Created: $PluginDir" -ForegroundColor Gray
+
+# Files to synchronize into the plugin package subdirectory.
+# Python sources live under src/; config/assets at repo root.
+$FilesToSync = @(
+    @{ Src = "src\emc_auditor_plugin.py";  Dst = "emc_auditor_plugin.py"  },
+    @{ Src = "src\via_stitching.py";       Dst = "via_stitching.py"       },
+    @{ Src = "src\decoupling.py";          Dst = "decoupling.py"          },
+    @{ Src = "src\emi_filtering.py";       Dst = "emi_filtering.py"       },
+    @{ Src = "src\clearance_creepage.py";  Dst = "clearance_creepage.py"  },
+    @{ Src = "src\ground_plane.py";        Dst = "ground_plane.py"        },
+    @{ Src = "src\signal_integrity.py";    Dst = "signal_integrity.py"    },
+    @{ Src = "emc_rules.toml";             Dst = "emc_rules.toml"         },
+    @{ Src = "emc_icon.png";               Dst = "emc_icon.png"           },
+    @{ Src = "icon-24.png";               Dst = "icon-24.png"            },
+    @{ Src = "icon-64.png";               Dst = "icon-64.png"            }
+)
+
+$SyncedCount = 0
+$FailedCount = 0
+
+foreach ($Entry in $FilesToSync) {
+    $File = $Entry.Dst
+    $SourcePath = Join-Path $RepoDir $Entry.Src
+    
+    if (Test-Path $SourcePath) {
+        try {
+            Copy-Item $SourcePath -Destination $PluginDir -Force
+            $FileInfo = Get-Item (Join-Path $PluginDir $File)
+            Write-Host "✅ $File" -NoNewline -ForegroundColor Green
+            Write-Host " ($([math]::Round($FileInfo.Length/1KB,2)) KB)" -ForegroundColor Gray
+            $SyncedCount++
+        } catch {
+            Write-Host "❌ Failed to copy $File : $_" -ForegroundColor Red
+            $FailedCount++
+        }
+    } else {
+        Write-Host "⚠️  File not found: $File" -ForegroundColor Yellow
+        $FailedCount++
+    }
+}
+
+Write-Host "`n📊 Sync Summary:" -ForegroundColor Cyan
+Write-Host "   Synced: $SyncedCount file(s)" -ForegroundColor Green
+if ($FailedCount -gt 0) {
+    Write-Host "   Failed: $FailedCount file(s)" -ForegroundColor Red
+}
+
+# Generate __init__.py for KiCad's package loader
+$InitContent = @'
+"""EMC Auditor KiCad Plugin — SWIG ActionPlugin registration."""
+import os, sys
+_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
+from emc_auditor_plugin import EMCAuditorPlugin  # noqa: F401
+'@
+Set-Content -Path (Join-Path $PluginDir "__init__.py") -Value $InitContent -Encoding UTF8 -NoNewline
+Write-Host "✅ __init__.py (KiCad package loader registration)" -ForegroundColor Green
+
+Write-Host "`n📂 KiCad Plugin Location:" -ForegroundColor Cyan
+Write-Host "   $PluginDir`n" -ForegroundColor Gray
+
+Write-Host "✅ Sync complete! Restart KiCad PCB Editor to load changes.`n" -ForegroundColor Green
