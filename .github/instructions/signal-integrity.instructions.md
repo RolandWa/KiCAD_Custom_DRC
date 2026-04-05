@@ -1,6 +1,6 @@
 ---
 description: "Use when implementing, editing, or extending signal_integrity.py. Loads the phased implementation roadmap and key pcbnew API patterns for signal integrity checks."
-applyTo: "signal_integrity.py"
+applyTo: "src/signal_integrity.py"
 ---
 
 # Signal Integrity Checker — Implementation Guide

@@ -4,7 +4,7 @@
 			"path": "."
 		},
 		{
-			"path": "../../KiCad/9.0/3rdparty/plugins/com_github_bouni_kicad-jlcpcb-tools"
+			"path": "../../KiCad/9.0/3rdparty/plugins"
 		}
 	]
 }

@@ -1,0 +1,17 @@
+# EMC Auditor Plugin — Python dependencies
+#
+# KiCad 9.0 bundles its own Python 3.11+ interpreter.
+# These packages are only needed when running outside KiCad
+# (e.g. syntax checks, unit tests, build scripts).
+
+# TOML configuration parsing.
+# Python 3.11+ includes tomllib in the standard library.
+# Python 3.8–3.10 requires the third-party backport.
+tomli>=1.2.0; python_version < "3.11"
+
+# Development / CI
+pytest>=6.0.0
+pytest-cov>=2.0.0
+
+# Build script (build.py)
+# No extra dependencies beyond the standard library.

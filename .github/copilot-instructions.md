@@ -16,8 +16,8 @@
 
 ```powershell
 # 1. Syntax check (no KiCad needed)
-python -c "import ast; ast.parse(open('signal_integrity.py', encoding='utf-8').read()); print('OK')"
-# Or: python -m py_compile emc_auditor_plugin.py
+python -c "import ast; ast.parse(open('src/signal_integrity.py', encoding='utf-8').read()); print('OK')"
+# Or: python -m py_compile src/emc_auditor_plugin.py
 
 # 2. Deploy to KiCad plugins directory (copies all 9 files + clears __pycache__)
 .\sync_to_kicad.ps1
@@ -34,7 +34,7 @@ $env:ORTHO_DEBUG = '1'; Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
 
 **Deploy workflow (one-liner):**
 ```powershell
-python -c "import ast; ast.parse(open('signal_integrity.py',encoding='utf-8').read())" && .\sync_to_kicad.ps1
+python -c "import ast; ast.parse(open('src/signal_integrity.py',encoding='utf-8').read())" && .\sync_to_kicad.ps1
 ```
 
 No automated test suite yet. Validation is manual against the baseline board.
@@ -55,14 +55,14 @@ The `PluginsDir` in `sync_to_kicad.ps1` points to:
 **Modular checker pattern with dependency injection.** The main plugin instantiates checker classes, injects utility functions (logging, marker drawing, distance calculation, group creation), and aggregates results.
 
 ```
-emc_auditor_plugin.py          ← Orchestrator: loads config, runs checkers, shows report
-├── via_stitching.py           ← GND return via proximity (IPC-2221)
-├── decoupling.py              ← Capacitor-to-IC distance (IPC-2221)
-├── emi_filtering.py           ← Connector filter topology (CISPR 32, IEC 61000)
-├── ground_plane.py            ← Return path continuity under traces
-├── clearance_creepage.py      ← IEC60664-1 / IPC2221 safety distances
-├── signal_integrity.py        ← Trace/via integrity checks (~2,400 lines; Phases 1–2 implemented, Phases 3–4 partially stubbed)
-└── emc_rules.toml             ← All thresholds and enable/disable flags
+src/emc_auditor_plugin.py      ← Orchestrator: loads config, runs checkers, shows report
+├── src/via_stitching.py       ← GND return via proximity (IPC-2221)
+├── src/decoupling.py          ← Capacitor-to-IC distance (IPC-2221)
+├── src/emi_filtering.py       ← Connector filter topology (CISPR 32, IEC 61000)
+├── src/ground_plane.py        ← Return path continuity under traces
+├── src/clearance_creepage.py  ← IEC60664-1 / IPC2221 safety distances
+├── src/signal_integrity.py    ← Trace/via integrity checks (~2,400 lines; Phases 1–2 implemented, Phases 3–4 partially stubbed)
+└── emc_rules.toml             ← All thresholds and enable/disable flags (root)
 ```
 
 ### Checker Interface Template
@@ -140,12 +140,12 @@ git status --ignored | Select-String -Pattern "sync_to_kicad.ps1|test_config.py"
 | Topic | File |
 |-------|------|
 | Feature list, installation, changelog | [README.md](../README.md) |
-| IEC60664-1 tables and domain configuration | [CLEARANCE_CREEPAGE_GUIDE.md](../CLEARANCE_CREEPAGE_GUIDE.md) |
-| Controlled impedance calculation | [IMPEDANCE_ALGORITHM.md](../IMPEDANCE_ALGORITHM.md) |
-| Via stitching rule | [VIA_STITCHING.md](../VIA_STITCHING.md) |
-| Ground plane continuity | [GROUND_PLANE.md](../GROUND_PLANE.md) |
-| Power trace width | [TRACE_WIDTH.md](../TRACE_WIDTH.md) |
-| Decoupling capacitor proximity | [DECOUPLING.md](../DECOUPLING.md) |
-| Clearance quick reference | [CLEARANCE_QUICK_REF.md](../CLEARANCE_QUICK_REF.md) |
-| Clearance vs. creepage visual | [CLEARANCE_VS_CREEPAGE_VISUAL.md](../CLEARANCE_VS_CREEPAGE_VISUAL.md) |
+| IEC60664-1 tables and domain configuration | [docs/CLEARANCE_CREEPAGE_GUIDE.md](../docs/CLEARANCE_CREEPAGE_GUIDE.md) |
+| Controlled impedance calculation | [docs/IMPEDANCE_ALGORITHM.md](../docs/IMPEDANCE_ALGORITHM.md) |
+| Via stitching rule | [docs/VIA_STITCHING.md](../docs/VIA_STITCHING.md) |
+| Ground plane continuity | [docs/GROUND_PLANE.md](../docs/GROUND_PLANE.md) |
+| Power trace width | [docs/TRACE_WIDTH.md](../docs/TRACE_WIDTH.md) |
+| Decoupling capacitor proximity | [docs/DECOUPLING.md](../docs/DECOUPLING.md) |
+| Clearance quick reference | [docs/CLEARANCE_QUICK_REF.md](../docs/CLEARANCE_QUICK_REF.md) |
+| Clearance vs. creepage visual | [docs/CLEARANCE_VS_CREEPAGE_VISUAL.md](../docs/CLEARANCE_VS_CREEPAGE_VISUAL.md) |
 | Manufacturer DRU presets | [JLCPCB/](../JLCPCB/), [PCBWAY/](../PCBWAY/) (standalone, not used by plugin) |
