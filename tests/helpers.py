@@ -23,6 +23,8 @@ def _make_pcbnew_mock():
     mod.ToMM   = lambda x: x / 1_000_000
     mod.F_Cu   = 0
     mod.B_Cu   = 31
+    mod.In1_Cu = 1
+    mod.In2_Cu = 2
     mod.VIATYPE_THROUGH = 0
 
     class _Stub:
@@ -39,9 +41,18 @@ def _make_pcbnew_mock():
     class VECTOR2I:
         def __init__(self, x=0, y=0): self.x = x; self.y = y
 
+    # Base classes for isinstance checks
+    class PCB_TRACK(_Stub):
+        """Base class for tracks and vias."""
+        pass
+    
+    class PCB_VIA(PCB_TRACK):
+        """Via class - inherits from PCB_TRACK for isinstance checks."""
+        pass
+
     mod.BOARD      = _Stub
-    mod.PCB_TRACK  = _Stub
-    mod.PCB_VIA    = _Stub
+    mod.PCB_TRACK  = PCB_TRACK
+    mod.PCB_VIA    = PCB_VIA
     mod.PCB_GROUP  = PCB_GROUP
     mod.PCB_SHAPE  = PCB_SHAPE
     mod.VECTOR2I   = VECTOR2I
@@ -97,6 +108,9 @@ class MockBoard:
     Pass ``board_file`` to simulate GetFileName() returning a real fixture path.
     Pass ``nets`` (list of MockNet) to populate the net class map.
     Pass ``layer_names`` (dict {layer_id: name}) to simulate GetLayerName().
+    Pass ``tracks`` (list of MockTrack) to simulate GetTracks().
+    Pass ``zones`` (list of MockZone) to simulate Zones().
+    Pass ``footprints`` (list of MockFootprint) to simulate GetFootprints().
     """
 
     def __init__(
@@ -104,10 +118,18 @@ class MockBoard:
         board_file: str = "",
         nets: list = None,
         layer_names: dict = None,
+        tracks: list = None,
+        zones: list = None,
+        footprints: list = None,
+        copper_layer_count: int = 4,
     ):
         self._file = board_file
         self._nets = nets or []
         self._layer_names = layer_names or {0: "F.Cu", 31: "B.Cu"}
+        self._tracks = tracks or []
+        self._zones = zones or []
+        self._footprints = footprints or []
+        self._copper_layer_count = copper_layer_count
 
     def GetFileName(self) -> str:
         return self._file
@@ -127,14 +149,265 @@ class MockBoard:
     def IsLayerEnabled(self, layer_id: int) -> bool:
         return layer_id in self._layer_names
 
+    def GetCopperLayerCount(self) -> int:
+        return self._copper_layer_count
+
     def GetTracks(self):
-        return []
+        return self._tracks
 
     def GetZones(self):
-        return []
+        return self._zones
 
     def Zones(self):
-        return []
+        return self._zones
+
+    def GetFootprints(self):
+        return self._footprints
+
+
+class MockBoundingBox:
+    """Minimal pcbnew.BOX2I stub."""
+    
+    def __init__(self, x1, y1, x2, y2):
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
+    
+    def GetWidth(self):
+        return abs(self.x2 - self.x1)
+    
+    def GetHeight(self):
+        return abs(self.y2 - self.y1)
+
+
+class MockZone:
+    """
+    Minimal pcbnew.ZONE stub for ground plane testing.
+    
+    Args:
+        net_name: Net name (e.g., "GND", "VCC")
+        layer: Layer ID (e.g., 0=F.Cu, 31=B.Cu)
+        filled: Whether zone is filled (must be True for HitTestFilledArea)
+        coverage_rects: List of tuples (x1, y1, x2, y2) defining filled areas in internal units
+        bbox: Optional bounding box, auto-calculated from coverage_rects if None
+    """
+    
+    def __init__(self, net_name: str, layer: int, filled: bool = True, 
+                 coverage_rects: list = None, bbox: MockBoundingBox = None):
+        self._net_name = net_name
+        self._layer = layer
+        self._filled = filled
+        self._coverage_rects = coverage_rects or []
+        self._bbox = bbox
+        
+        # Auto-calculate bounding box if not provided
+        if self._bbox is None and self._coverage_rects:
+            all_x = [x for rect in self._coverage_rects for x in (rect[0], rect[2])]
+            all_y = [y for rect in self._coverage_rects for y in (rect[1], rect[3])]
+            self._bbox = MockBoundingBox(min(all_x), min(all_y), max(all_x), max(all_y))
+        elif self._bbox is None:
+            # Default 10mm x 10mm zone
+            import pcbnew
+            self._bbox = MockBoundingBox(0, 0, pcbnew.FromMM(10), pcbnew.FromMM(10))
+    
+    def GetNetname(self) -> str:
+        return self._net_name
+    
+    def GetLayer(self) -> int:
+        return self._layer
+    
+    def IsFilled(self) -> bool:
+        return self._filled
+    
+    def GetBoundingBox(self) -> MockBoundingBox:
+        return self._bbox
+    
+    def HitTestFilledArea(self, layer: int, pos) -> bool:
+        """
+        Check if a point is inside the filled zone.
+        
+        Args:
+            layer: Layer ID to check
+            pos: VECTOR2I position
+        
+        Returns:
+            True if point is inside filled zone on specified layer
+        """
+        # Must be filled and on correct layer
+        if not self._filled or layer != self._layer:
+            return False
+        
+        # Check if point is inside any coverage rectangle
+        for x1, y1, x2, y2 in self._coverage_rects:
+            if x1 <= pos.x <= x2 and y1 <= pos.y <= y2:
+                return True
+        
+        return False
+
+
+class MockTrack:
+    """
+    Minimal pcbnew.PCB_TRACK stub.
+    
+    Args:
+        net_name: Net name (e.g., "CLK", "USB_D+")
+        start: VECTOR2I start position
+        end: VECTOR2I end position
+        layer: Layer ID
+        net_class: Net class name (e.g., "HighSpeed", "Default")
+        width: Track width in internal units
+    
+    The __class__ attribute is set dynamically to pcbnew.PCB_TRACK in __init__
+    to make isinstance(obj, pcbnew.PCB_TRACK) checks work correctly.
+    """
+    
+    def __init__(self, net_name: str, start, end, layer: int = 0,
+                 net_class: str = "Default", width: int = None):
+        self._net_name = net_name
+        self._start = start
+        self._end = end
+        self._layer = layer
+        self._net_class = net_class
+        # Import pcbnew here, not at module level
+        import pcbnew
+        self._width = width or pcbnew.FromMM(0.2)  # Default 0.2mm
+        
+        # Dynamically inherit from pcbnew.PCB_TRACK for isinstance checks
+        # This must be done per-instance after pcbnew is imported
+        if not isinstance(self, pcbnew.PCB_TRACK):
+            # Create a new class that inherits from both
+            self.__class__ = type('MockTrack', (pcbnew.PCB_TRACK, MockTrack), {})
+    
+    def GetNetname(self) -> str:
+        return self._net_name
+    
+    def GetNetClassName(self) -> str:
+        return self._net_class
+    
+    def GetStart(self):
+        return self._start
+    
+    def GetEnd(self):
+        return self._end
+    
+    def GetPosition(self):
+        """Return track center position."""
+        import pcbnew
+        center_x = (self._start.x + self._end.x) // 2
+        center_y = (self._start.y + self._end.y) // 2
+        return pcbnew.VECTOR2I(center_x, center_y)
+    
+    def GetLayer(self) -> int:
+        return self._layer
+    
+    def GetWidth(self) -> int:
+        return self._width
+
+
+class MockVia:
+    """
+    Minimal pcbnew.PCB_VIA stub.
+    
+    Args:
+        net_name: Net name (e.g., "GND", "CLK")
+        position: VECTOR2I position
+        drill_diameter: Via drill diameter in mm (default 0.3mm)
+        net_class: Net class name (e.g., "Default", "HighSpeed") - optional
+    
+    The __class__ attribute is set dynamically to pcbnew.PCB_VIA in __init__
+    to make isinstance(obj, pcbnew.PCB_VIA) checks work correctly.
+    """
+    
+    def __init__(self, net_name: str, position, drill_diameter: float = 0.3, net_class: str = "Default"):
+        self._net_name = net_name
+        self._position = position
+        self._net_class = net_class
+        self._layer = 0  # Vias span all layers, but we can return F.Cu as default
+        # Import pcbnew here after conftest has mocked it
+        import pcbnew
+        self._drill = pcbnew.FromMM(drill_diameter)
+        
+        # Dynamically inherit from pcbnew.PCB_VIA for isinstance checks
+        # This must be done per-instance after pcbnew is imported
+        if not isinstance(self, pcbnew.PCB_VIA):
+            # Create a new class that inherits from both
+            self.__class__ = type('MockVia', (pcbnew.PCB_VIA, MockVia), {})
+    
+    def GetNetname(self) -> str:
+        return self._net_name
+    
+    def GetNetClassName(self) -> str:
+        return self._net_class
+    
+    def GetPosition(self):
+        return self._position
+    
+    def GetStart(self):
+        """Vias have no start/end - both return the via position."""
+        return self._position
+    
+    def GetEnd(self):
+        """Vias have no start/end - both return the via position."""
+        return self._position
+    
+    def GetLayer(self) -> int:
+        """Return layer (vias span all layers, but return F.Cu as default)."""
+        return self._layer
+    
+    def GetDrill(self) -> int:
+        return self._drill
+
+
+class MockPad:
+    """
+    Minimal pcbnew.PAD stub.
+    
+    Args:
+        net_name: Net name (e.g., "GND", "VCC")
+        position: VECTOR2I position
+        number: Pad number (e.g., "1", "2")
+    """
+    
+    def __init__(self, net_name: str, position, number: str = "1"):
+        self._net_name = net_name
+        self._position = position
+        self._number = number
+    
+    def GetNetname(self) -> str:
+        return self._net_name
+    
+    def GetPosition(self):
+        return self._position
+    
+    def GetNumber(self) -> str:
+        return self._number
+
+
+class MockFootprint:
+    """
+    Minimal pcbnew.FOOTPRINT stub.
+    
+    Args:
+        reference: Reference designator (e.g., "U1", "C1")
+        pads: List of MockPad objects
+        position: VECTOR2I position
+    """
+    
+    def __init__(self, reference: str, pads: list = None, position=None):
+        self._reference = reference
+        self._pads = pads or []
+        import pcbnew
+        self._position = position or pcbnew.VECTOR2I(0, 0)
+    
+    def GetReference(self) -> str:
+        return self._reference
+    
+    def Pads(self):
+        return self._pads
+    
+    def GetPosition(self):
+        return self._position
 
 
 def make_si_checker(board=None, config=None):

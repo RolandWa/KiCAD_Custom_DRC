@@ -11,7 +11,12 @@ License: MIT (see LICENSE file in repository)
 
 import pcbnew
 import math
-import wx
+
+try:
+    import wx
+    HAS_WX = True
+except ImportError:
+    HAS_WX = False  # Testing environment without wxPython
 
 
 class GroundPlaneChecker:
@@ -101,6 +106,9 @@ class GroundPlaneChecker:
         check_clearance = self.config.get('check_clearance_around_trace', True)
         check_mode = self.config.get('ground_plane_check_layers', 'adjacent')  # 'adjacent' or 'all'
         check_both = self.config.get('check_both_sides', True)
+        check_split_crossing = self.config.get('check_split_plane_crossing', True)  # NEW: Priority 2
+        check_return_vias = self.config.get('check_return_via_continuity', True)  # NEW: Priority 3
+        return_via_max_dist_mm = self.config.get('return_via_max_distance_mm', 3.0)  # mm
         ignore_via_clearance_mm = self.config.get('ignore_via_clearance', 0.5)  # mm
         ignore_pad_clearance_mm = self.config.get('ignore_pad_clearance', 0.3)  # mm
         min_area_mm2 = self.config.get('min_ground_polygon_area_mm2', 10.0)
@@ -108,6 +116,9 @@ class GroundPlaneChecker:
         self.log(f"Check mode: {check_mode}")
         self.log(f"Check continuity: {check_continuity}")
         self.log(f"Check clearance: {check_clearance}")
+        self.log(f"Check split crossing: {check_split_crossing}")
+        self.log(f"Check return vias: {check_return_vias}")
+        self.log(f"Return via max distance: {return_via_max_dist_mm} mm")
         self.log(f"Check both sides: {check_both}")
         self.log(f"Ignore via clearance: {ignore_via_clearance_mm} mm")
         self.log(f"Ignore pad clearance: {ignore_pad_clearance_mm} mm")
@@ -149,10 +160,13 @@ class GroundPlaneChecker:
             self.log("HINT: Check your KiCad net classes (Edit → Board Setup → Net Classes)", force=True)
             return 0
         
-        # Get all ground plane polygons/zones and organize by layer for performance
-        self.log("\n--- Scanning all zones ---")
+        # Get ALL zones (not just ground) for split plane detection - Priority 2
+        # Dynamic zone discovery: no layer-to-plane assumptions
+        self.log("\n--- Scanning all zones (dynamic discovery) ---")
         ground_zones = []
+        all_reference_zones = []  # All zones (ground AND power) for split detection
         ground_zones_by_layer = {}  # Pre-filter zones by layer for O(1) lookup
+        all_zones_by_layer = {}  # All reference planes by layer
         
         for zone in self.board.Zones():
             zone_net = zone.GetNetname().upper()
@@ -161,27 +175,36 @@ class GroundPlaneChecker:
             is_filled = zone.IsFilled()
             self.log(f"Zone: net='{zone.GetNetname()}', layer={layer_name}, filled={is_filled}")
             
+            if not is_filled:
+                self.log(f"  ⚠️  WARNING: Zone NOT FILLED! Press 'B' to fill zones.")
+                continue  # Skip unfilled zones (can't hit test them)
+            
+            # Check minimum polygon area (filter out small copper islands)
+            bbox = zone.GetBoundingBox()
+            width_mm = pcbnew.ToMM(bbox.GetWidth())
+            height_mm = pcbnew.ToMM(bbox.GetHeight())
+            zone_area_mm2 = width_mm * height_mm  # Bounding box area in mm²
+            if zone_area_mm2 < min_area_mm2:
+                self.log(f"  ⚠️  Zone too small ({zone_area_mm2:.1f} mm² < {min_area_mm2:.1f} mm²), skipping")
+                continue
+            
+            # Add ALL zones to reference plane list (for split detection)
+            all_reference_zones.append(zone)
+            if zone_layer not in all_zones_by_layer:
+                all_zones_by_layer[zone_layer] = []
+            all_zones_by_layer[zone_layer].append(zone)
+            
+            # Also track ground zones specifically
             if any(pat in zone_net for pat in gnd_patterns):
-                if not is_filled:
-                    self.log(f"  ⚠️  WARNING: Ground zone NOT FILLED! Press 'B' to fill zones.")
-                    continue  # Skip unfilled zones (can't hit test them)
-                
-                # Check minimum polygon area (filter out small copper islands)
-                bbox = zone.GetBoundingBox()
-                width_mm = pcbnew.ToMM(bbox.GetWidth())
-                height_mm = pcbnew.ToMM(bbox.GetHeight())
-                zone_area_mm2 = width_mm * height_mm  # Bounding box area in mm²
-                if zone_area_mm2 < min_area_mm2:
-                    self.log(f"  ⚠️  Ground zone too small ({zone_area_mm2:.1f} mm² < {min_area_mm2:.1f} mm²), skipping")
-                    continue
-                
                 ground_zones.append(zone)
                 
                 # Add to layer-indexed dict for fast lookup
                 if zone_layer not in ground_zones_by_layer:
                     ground_zones_by_layer[zone_layer] = []
                 ground_zones_by_layer[zone_layer].append(zone)
-                self.log(f"  ✓ Added as ground zone ({zone_area_mm2:.1f} mm²)")
+                self.log(f"  ✓ Added as GROUND zone ({zone_area_mm2:.1f} mm²)")
+            else:
+                self.log(f"  ✓ Added as REFERENCE zone (non-ground) ({zone_area_mm2:.1f} mm²)")
         
         if not ground_zones:
             self.log(f"\n❌ ERROR: No ground plane zones found!", force=True)
@@ -203,13 +226,14 @@ class GroundPlaneChecker:
                 if is_preferred:
                     self.log(f"  ✓ Layer {self.board.GetLayerName(layer_id)} marked as preferred")
         
-        self.log(f"\n✓ Found {len(critical_tracks)} critical tracks and {len(ground_zones)} ground zones", force=True)
+        self.log(f"\n✓ Found {len(critical_tracks)} critical tracks, {len(ground_zones)} ground zones, {len(all_reference_zones)} total reference zones", force=True)
         self.log(f"   Ground zones indexed by {len(ground_zones_by_layer)} layers for fast lookup", force=True)
+        self.log(f"   All zones indexed by {len(all_zones_by_layer)} layers for split detection", force=True)
         self.log("="*60)
         
         # Create progress dialog for user feedback
         progress = None
-        if len(critical_tracks) > 10:  # Only show progress for substantial work
+        if HAS_WX and len(critical_tracks) > 10:  # Only show progress for substantial work
             try:
                 progress = wx.ProgressDialog(
                     "Ground Plane Check",
@@ -268,7 +292,7 @@ class GroundPlaneChecker:
             num_samples = max(2, int(track_length / sampling_interval))
             self.log(f"    Track length: {pcbnew.ToMM(track_length):.2f} mm, samples: {num_samples}")
             
-            # Check continuity under trace
+            # ========== PRIORITY 1: Check continuity under trace (slot/gap detection) ==========
             if check_continuity:
                 gap_found = False
                 gap_position = None
@@ -317,6 +341,20 @@ class GroundPlaneChecker:
                     self.log(f"    ✓ Violation marker created at ({pcbnew.ToMM(gap_position.x):.2f}, {pcbnew.ToMM(gap_position.y):.2f}) mm", force=True)
                 else:
                     self.log(f"    ✓ No gaps found - ground plane continuous")
+            
+            # ========== PRIORITY 2: Check split plane crossing ==========
+            if check_split_crossing:
+                self.log(f"\n    --- Checking split plane crossing ---")
+                split_violation = self._check_split_plane_crossing(
+                    track, start, end, num_samples, layers_to_check,
+                    all_zones_by_layer, gnd_patterns,
+                    draw_marker_func, create_group_func, net_name
+                )
+                if split_violation > 0:
+                    violations += split_violation
+                    self.log(f"    ✓ {split_violation} split crossing violation(s) found", force=True)
+                else:
+                    self.log(f"    ✓ No split plane crossings")
             
             # Check clearance around trace
             if check_clearance:
@@ -393,6 +431,183 @@ class GroundPlaneChecker:
         # Clean up progress dialog
         if progress:
             progress.Destroy()
+        
+        # ========== PRIORITY 3: Check return via continuity ==========
+        if check_return_vias:
+            self.log("\n=== RETURN VIA CONTINUITY CHECK ===", force=True)
+            return_via_violations = self._check_return_via_continuity(
+                gnd_patterns, return_via_max_dist_mm,
+                draw_marker_func, create_group_func, get_distance_func
+            )
+            violations += return_via_violations
+            self.log(f"✓ Return via check complete: {return_via_violations} violations", force=True)
+        
+        return violations
+    
+    def _check_split_plane_crossing(self, track, start, end, num_samples, layers_to_check,
+                                     all_zones_by_layer, gnd_patterns,
+                                     draw_marker_func, create_group_func, net_name):
+        """
+        PRIORITY 2: Detect when a trace crosses from one reference plane to another (split crossing).
+        
+        This check identifies traces that cross splits between different reference planes
+        (e.g., GND to VCC, or between two isolated GND pours). Such crossings create
+        return path discontinuities and EMI issues.
+        
+        Key Design Insight (from user):
+        - NO layer-to-plane mapping assumptions
+        - Boards may use split planes on certain layers
+        - Some designs use only ground alignment under specific signals
+        - Some use double tracks for high-current paths (power LEDs, motors)
+        
+        Algorithm:
+        1. Sample points along trace
+        2. For each point, identify which zone(s) it's over (dynamically)
+        3. Detect transitions from one zone to another (split crossing)
+        4. Flag violations where trace crosses between different reference nets
+        
+        Args:
+            track: PCB_TRACK object
+            start: VECTOR2I start position
+            end: VECTOR2I end position
+            num_samples: int - number of sample points
+            layers_to_check: list[int] - layer IDs to check
+            all_zones_by_layer: dict[int, list[ZONE]] - all zones indexed by layer
+            gnd_patterns: list[str] - ground net patterns (uppercase)
+            draw_marker_func: Function to draw violation markers
+            create_group_func: Function to create PCB groups
+            net_name: str - signal net name
+        
+        Returns:
+            int: Number of violations found
+        """
+        violations = 0
+        prev_zone_net = None  # Track which zone we were over in previous sample
+        prev_sample_pos = None
+        split_msg = self.config.get('violation_message_split_crossing', 'SPLIT PLANE CROSSING')
+        
+        for i in range(num_samples + 1):
+            t = i / num_samples
+            sample_x = int(start.x + (end.x - start.x) * t)
+            sample_y = int(start.y + (end.y - start.y) * t)
+            sample_pos = pcbnew.VECTOR2I(sample_x, sample_y)
+            
+            # Find which zone(s) this point is over (dynamic discovery)
+            current_zone_net = None
+            current_zone_obj = None
+            
+            for check_layer in layers_to_check:
+                for zone in all_zones_by_layer.get(check_layer, []):
+                    if zone.HitTestFilledArea(check_layer, sample_pos):
+                        current_zone_net = zone.GetNetname().upper()
+                        current_zone_obj = zone
+                        break
+                if current_zone_net:
+                    break
+            
+            # Check for split crossing
+            if prev_zone_net is not None and current_zone_net is not None:
+                if prev_zone_net != current_zone_net:
+                    # Trace crossed from one reference plane to another!
+                    self.log(f"    ❌ SPLIT CROSSING: {prev_zone_net} → {current_zone_net}")
+                    self.log(f"       Position: ({pcbnew.ToMM(sample_x):.2f}, {pcbnew.ToMM(sample_y):.2f}) mm")
+                    
+                    # Create violation marker
+                    violation_group = create_group_func(self.board, "GndPlaneSplit", net_name, violations+1)
+                    
+                    # Draw marker at crossing point
+                    msg = f"{split_msg}: {prev_zone_net}→{current_zone_net}"
+                    draw_marker_func(self.board, sample_pos, msg, self.marker_layer, violation_group)
+                    violations += 1
+            
+            # Update tracking
+            prev_zone_net = current_zone_net
+            prev_sample_pos = sample_pos
+        
+        return violations
+    
+    def _check_return_via_continuity(self, gnd_patterns, max_distance_mm,
+                                     draw_marker_func, create_group_func, get_distance_func):
+        """
+        PRIORITY 3: Check that signal vias changing layers have nearby ground vias.
+        
+        When a signal via transitions between layers, the return current must also
+        transition. Without a nearby ground via, the return path has high impedance,
+        causing EMI radiation and signal integrity issues.
+        
+        IPC-2221 / High-Speed Design Guidelines:
+        - Return vias should be within 3mm (default) of signal vias
+        - Closer is better: <1mm for high-speed (USB, Ethernet)
+        - Multiple return vias for differential pairs
+        
+        Algorithm:
+        1. Find all signal vias (non-ground nets)
+        2. For each signal via, find nearest ground via
+        3. Flag violation if distance > max_distance_mm
+        
+        Args:
+            gnd_patterns: list[str] - ground net patterns (uppercase)
+            max_distance_mm: float - maximum allowed distance
+            draw_marker_func: Function to draw violation markers
+            create_group_func: Function to create PCB groups
+            get_distance_func: Function to calculate distance
+        
+        Returns:
+            int: Number of violations found
+        """
+        violations = 0
+        max_distance = pcbnew.FromMM(max_distance_mm)
+        violation_msg = self.config.get('violation_message_no_return_via', 'NO RETURN VIA')
+        
+        # Collect all vias, categorized
+        signal_vias = []
+        ground_vias = []
+        
+        for track in self.board.GetTracks():
+            if isinstance(track, pcbnew.PCB_VIA):
+                via_net = track.GetNetname().upper()
+                is_ground = any(gnd in via_net for gnd in gnd_patterns)
+                
+                if is_ground:
+                    ground_vias.append(track)
+                else:
+                    signal_vias.append(track)
+        
+        self.log(f"Found {len(signal_vias)} signal vias, {len(ground_vias)} ground vias")
+        
+        if not ground_vias:
+            self.log("⚠️  No ground vias found - skipping return via check")
+            return 0
+        
+        # Check each signal via for nearby ground via
+        for via in signal_vias:
+            via_pos = via.GetPosition()
+            via_net = via.GetNetname()
+            
+            # Find nearest ground via
+            min_dist = float('inf')
+            nearest_gnd_via = None
+            
+            for gnd_via in ground_vias:
+                gnd_pos = gnd_via.GetPosition()
+                dist = get_distance_func(via_pos, gnd_pos)
+                
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_gnd_via = gnd_via
+            
+            # Check if violation
+            if min_dist > max_distance:
+                self.log(f"    ❌ Via on '{via_net}' has no return via within {max_distance_mm}mm (nearest: {pcbnew.ToMM(min_dist):.2f}mm)")
+                
+                # Create violation marker
+                violation_group = create_group_func(self.board, "ReturnVia", via_net, violations+1)
+                
+                msg = f"{violation_msg}: {pcbnew.ToMM(min_dist):.1f}mm"
+                draw_marker_func(self.board, via_pos, msg, self.marker_layer, violation_group)
+                violations += 1
+            else:
+                self.log(f"    ✓ Via on '{via_net}' OK (return via {pcbnew.ToMM(min_dist):.2f}mm away)")
         
         return violations
     

@@ -111,7 +111,7 @@ critical_net_classes = ["HighSpeed", "Clock", "Differential", "USB", "Ethernet"]
 ground_net_patterns = ["GND", "GROUND", "VSS", "PGND", "AGND", "DGND"]
 
 # ======================================================================
-# GROUND PLANE CONTINUITY CHECK (underneath traces)
+# PRIORITY 1: GROUND PLANE CONTINUITY CHECK (slot/gap detection)
 # ======================================================================
 # Verifies unbroken ground plane beneath high-speed traces (signal return path, EMI reduction)
 
@@ -122,6 +122,31 @@ sampling_interval_mm = 0.5  # Check interval along trace
 ground_plane_check_layers = "all"  # "adjacent" = layer below, "all" = all ground layers
 
 violation_message_no_ground = "NO GND PLANE UNDER TRACE"
+
+# ======================================================================
+# PRIORITY 2: SPLIT PLANE CROSSING DETECTION (NEW)
+# ======================================================================
+# Detects traces crossing from one reference plane to another (e.g., GND→VCC split)
+# Creates return path discontinuity and EMI issues
+#
+# DESIGN INSIGHT: No layer-to-plane mapping assumptions
+# - Boards may use split planes on certain layers
+# - Some designs use only ground alignment under specific signals
+# - Some use double tracks for high-current paths (power LEDs, motors)
+# - Dynamic zone discovery handles all configurations
+
+check_split_plane_crossing = true
+violation_message_split_crossing = "SPLIT PLANE CROSSING"
+
+# ======================================================================
+# PRIORITY 3: RETURN VIA CONTINUITY (NEW)
+# ======================================================================
+# Verifies signal vias have nearby ground vias for return current path
+# IPC-2221 / High-Speed Design: Return vias should be within 3mm of signal vias
+
+check_return_via_continuity = true
+return_via_max_distance_mm = 3.0  # Max distance from signal via to ground via
+violation_message_no_return_via = "NO RETURN VIA"
 
 # ======================================================================
 # GROUND PLANE CLEARANCE CHECK (around traces)

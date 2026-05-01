@@ -37,7 +37,50 @@ $env:ORTHO_DEBUG = '1'; Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
 python -c "import ast; ast.parse(open('src/signal_integrity.py',encoding='utf-8').read())" && .\sync_to_kicad.ps1
 ```
 
-No automated test suite yet. Validation is manual against the baseline board.
+### Testing Infrastructure
+
+**Test framework:** pytest with mock `pcbnew` API (see [tests/conftest.py](../tests/conftest.py))  
+**Test structure:** Mirror `src/` — one subdirectory per checker module  
+**Test status:** Priority 1 & 3 tests passing (5/12), Priority 2 & 4 skipped  
+**Test helpers:** [tests/helpers.py](../tests/helpers.py) provides mock factories (MockBoard, MockZone, MockTrack, MockVia, MockPad, MockFootprint)
+
+Run tests:
+```powershell
+pytest tests/                    # Run all tests (currently all skipped)
+pytest tests/via_stitching/     # Run specific module tests
+pytest -v                        # Verbose output shows skip reasons
+```
+
+**Test stub pattern (serves as specification):**
+```python
+@pytest.mark.skip(reason="TODO: mock two pads at 1.5mm spacing — assert violation drawn")
+def test_clearance_violation(self):
+    pass
+```
+
+### Unicode Encoding in Tests (CRITICAL)
+
+**Problem:** Windows console (cp1252 encoding) cannot handle Unicode characters used in log messages (✓, ❌, ⚠️, µ). This causes `UnicodeEncodeError: 'charmap' codec can't encode character` when printing logs during test debugging.
+
+**Solution:** When printing logs in tests, always encode to ASCII with replacement:
+```python
+# ✅ CORRECT - Safe for Windows console
+safe_log = log.encode('ascii', 'replace').decode('ascii')
+print(safe_log)  # Special chars become '?'
+
+# ❌ WRONG - Will crash on Windows
+print(log)  # Fails if log contains ✓, ❌, ⚠️, µ
+```
+
+**Additional Unicode Issues:**
+- **µ (micro) symbol:** Upper/lowercase use different Unicode code points (U+00B5 vs U+03BC)
+- **Box drawing chars:** May not render in console, use ASCII art instead (e.g., `---` instead of `─`)
+- **Emoji:** Avoid in production code; Windows console support varies
+
+**When to apply:**
+- All test print statements that output checker logs
+- Debug logging during test development
+- Never needed in production code (KiCad handles UTF-8 natively)
 
 ### Config files — two copies to keep in sync
 | File | Purpose |
@@ -124,6 +167,10 @@ class NewChecker:
 - **Do NOT** use raw integers for coordinates — always convert via `pcbnew.FromMM()`/`pcbnew.ToMM()`
 - **Do NOT** hardcode thresholds — read from `self.config` with defaults
 - **Do NOT** import `wx` in checker modules — only the main plugin uses GUI
+- **Do NOT** access config with `self.config['key']` — always use `.get('key', default)` to prevent KeyErrors
+- **Do NOT** use VECTOR2I as dict keys — convert to string first (`f"{pos.x}_{pos.y}"`)
+- **Do NOT** edit the KiCad copy of `emc_rules.toml` — edit the repo root version
+- **Do NOT** print Unicode characters directly in tests — use `.encode('ascii', 'replace').decode('ascii')` for Windows console compatibility
 
 ## Security — Pre-Commit Mandatory
 
