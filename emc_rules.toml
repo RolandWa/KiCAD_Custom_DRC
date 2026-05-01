@@ -64,6 +64,18 @@ violation_message = "CAP TOO FAR ({distance:.1f}mm)"
 draw_arrow_to_nearest_cap = true  # Draw arrow from IC pin to nearest cap
 show_capacitor_label = true       # Show cap reference (e.g., "→ C15")
 
+# Package type preferences (prioritize SMD for better high-frequency performance)
+prefer_smd_capacitors = true  # Prioritize SMD capacitors over THT
+
+# Non-SMD bulk capacitor exception (values >= threshold produce warning instead of error)
+# Large electrolytic/tantalum bulk capacitors (≥22µF) are typically THT and placed farther
+non_smd_value_threshold_uf = 22.0  # Microfarads (µF)
+
+# Via count checking (ensures low-inductance connection to power planes)
+check_via_count = true  # Enable via count verification near capacitors
+min_vias_per_capacitor = 2  # Minimum vias per capacitor pad (parallel paths reduce inductance)
+via_search_radius_mm = 2.0  # Search radius around capacitor pads for vias
+
 # Matches capacitors on same power net only (VCC pin → VCC capacitors)
 
 # ======================================================================

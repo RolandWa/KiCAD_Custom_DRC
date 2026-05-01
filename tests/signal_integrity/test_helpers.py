@@ -95,14 +95,18 @@ class TestBuildConnectivityGraph:
 def signal_integrity_checker(mock_board):
     """Fixture providing a SignalIntegrityChecker instance."""
     import sys
+    import importlib.util
     from pathlib import Path
     
-    # Add src directory to path
+    # Load signal_integrity module directly from src/ directory
     src_dir = Path(__file__).parent.parent.parent / 'src'
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
+    signal_integrity_path = src_dir / 'signal_integrity.py'
     
-    from signal_integrity import SignalIntegrityChecker
+    spec = importlib.util.spec_from_file_location("signal_integrity_module", signal_integrity_path)
+    signal_integrity_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signal_integrity_module)
+    
+    SignalIntegrityChecker = signal_integrity_module.SignalIntegrityChecker
     
     # Mock configuration
     config = {
