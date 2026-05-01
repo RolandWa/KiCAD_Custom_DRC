@@ -1,0 +1,16 @@
+(kicad_pcb (version 20171130) (generator pcbnew)
+
+  (net_class "HighSpeed" "High Speed Signals"
+    (add_net "CLK_P")
+    (add_net "CLK_N")
+    (add_net "DATA_TX")
+  )
+
+  (net_class "Power" "Power rails"
+    (add_net "VCC_3V3")
+    (add_net "GND")
+  )
+
+  (pad_to_mask_clearance 0)
+
+)

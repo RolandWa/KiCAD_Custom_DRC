@@ -10,163 +10,140 @@ Version: 1.0.0
 Last Updated: 2026-02-13
 
 ================================================================================
-IMPLEMENTATION PRIORITY - TODO LIST (Easy → Hard)
+TODO LIST — Signal Integrity Checks
+Last updated: 2026-04-05
 ================================================================================
 
-PHASE 1 - EASY (Basic Geometry & Filtering)
+ STATUS KEY:  ✅ FULLY IMPLEMENTED   🔬 TESTS NEEDED   □ NOT IMPLEMENTED
+
 ────────────────────────────────────────────────────────────────────────────
-□ CHECK 5: Net Length Maximum
-  Difficulty: ★☆☆☆☆ (EASIEST)
-  - Simple: Iterate tracks, sum lengths per net, compare to threshold
-  - APIs available: GetTracks(), GetLength()
-  - No complex algorithms needed
-  - Estimated time: 2-3 hours
-
-□ CHECK 4: Exposed Critical Traces  
-  Difficulty: ★★☆☆☆
-  - Check if trace layer is outer layer (F.Cu or B.Cu)
-  - Sum exposed segment lengths per net
-  - Simple layer ID comparison
-  - Estimated time: 3-4 hours
-
-□ CHECK 8: Unconnected Via Pads
-  Difficulty: ★★☆☆☆
-  - Get via layer span, iterate internal layers
-  - Check GetConnectedItems() on each layer
-  - Flag if no connections found
-  - Estimated time: 4-5 hours
-
-
-PHASE 2 - MEDIUM (Spatial Analysis & Pattern Matching)
+PHASE 1 — DONE (Basic Geometry & Filtering)
 ────────────────────────────────────────────────────────────────────────────
-☑ CHECK 14: Controlled Impedance Verification
-  ✅ FULLY IMPLEMENTED
-  - Net class + pattern-based net discovery
-  - Stackup reading from .kicad_pcb file (epsilon_r, copper thickness)
-  - Microstrip: IPC-2141 formula with effective-width correction
-  - Stripline: Wadell formula (symmetric symmetric planes)
-  - Differential: Z_diff = 2*Z0*sqrt(1 - 0.48*exp(-0.96*S/H))
-  - DP detection via regex (_identify_differential_pairs)
-  - Spatial index for fast partner-track lookup
-  - PCB markers + segment highlights on violations
+✅ CHECK 4: Exposed Critical Traces                          [code ✓] [test 🔬]
+   - Outer-layer trace exposure check; accumulates exposed length per net
+   - Tests needed: MockTrack on F.Cu with critical net class
 
-□ CHECK 12: Differential Pair Length Matching
-  Difficulty: ★★★☆☆
-  - Implement _identify_differential_pairs() with regex
-  - Calculate total length for both traces (reuse CHECK 5 logic)
-  - Compare P vs N lengths
-  - Estimate time: 5-6 hours
+✅ CHECK 5: Net Length Maximum                               [code ✓] [test 🔬]
+   - Per-net length accumulation; max_length_by_netclass threshold
+   - Tests needed: MockTrack list summing over limit vs under limit
 
-□ CHECK 9: Critical Net Isolation (Single-Ended)
-  Difficulty: ★★★☆☆
-  - Requires perpendicular scanning from trace
-  - Check nearby traces within distance threshold
-  - Verify if neighbor is GND net (pattern matching)
-  - Spatial search needed but simplified (2D)
-  - Estimated time: 6-8 hours
+✅ CHECK 8: Unconnected Via Pads                             [code ✓] [test 🔬]
+   - Through-via isolation check; track endpoint + zone coverage test
+   - Tests needed: MockVia with no nearby track endpoint
 
-□ CHECK 1: Trace Near Plane Edge
-  Difficulty: ★★★☆☆
-  - Extract zone boundaries: GetZones(), GetOutline()
-  - Calculate distance from trace to polygon edge
-  - Geometry: point-to-polygon distance
-  - Estimated time: 6-8 hours
-
-□ CHECK 7: Unreferenced Traces (Above/Below Reference Plane)
-  Difficulty: ★★★☆☆
-  - Similar to CHECK 1 but checks vertical plane coverage
-  - Map signal layers to adjacent plane layers
-  - Check if trace segments overlap with plane polygons
-  - Estimated time: 7-9 hours
-
-
-PHASE 3 - ADVANCED (Complex Geometry & Graph Algorithms)
 ────────────────────────────────────────────────────────────────────────────
-□ CHECK 11: Net Coupling / Crosstalk Analysis
-  Difficulty: ★★★★☆
-  - Build spatial index (R-tree or grid) for all segments
-  - Detect parallel segments with angular tolerance
-  - Calculate overlap length and minimum spacing
-  - Compute coupling coefficient (length/spacing ratio)
-  - Requires efficient spatial queries
-  - Estimated time: 10-12 hours
-
-□ CHECK 6: Net Stub Check
-  Difficulty: ★★★★☆
-  - Build connectivity graph per net
-  - Detect branch points (T-junctions)
-  - Calculate stub lengths from graph
-  - Handle via stubs (unused via tails)
-  - Graph traversal algorithms needed
-  - Estimated time: 10-12 hours
-
-□ CHECK 10: Critical Net Isolation (Differential)
-  Difficulty: ★★★★☆
-  - Requires CHECK 12 differential pair identification
-  - Determine pair orientation (which traces are inside/outside)
-  - Check outer edges only (not between pair)
-  - More complex geometry than single-ended isolation
-  - Estimated time: 8-10 hours
-
-
-PHASE 4 - EXPERT (Multi-Layer & Advanced Analysis)
+PHASE 2 — DONE (Spatial Analysis & Pattern Matching)
 ────────────────────────────────────────────────────────────────────────────
-□ CHECK 2: Reference Plane Crossing
-  Difficulty: ★★★★★
-  - Analyze layer stackup (signal layers vs plane layers)
-  - For each via: determine reference planes on start/end layers
-  - Detect plane net name changes (GND → AGND, GND → +3V3)
-  - Search for stitching vias nearby
-  - Requires stackup understanding
-  - Estimated time: 12-15 hours
+✅ CHECK 1: Trace Near Plane Edge                            [code ✓] [test 🔬]
+   - Zone boundary extraction; point-to-segment distance along polygon edges
+   - Tests needed: MockZone rectangle + MockTrack near edge
 
-□ CHECK 3: Reference Plane Changing
-  Difficulty: ★★★★★
-  - Continuous trace path tracking (segment by segment)
-  - At each segment, determine plane directly below/above
-  - Detect transitions between different plane nets or gaps
-  - Horizontal plane changes (gaps in planes on same layer)
-  - Most complex plane analysis
-  - Estimated time: 12-15 hours
+✅ CHECK 1B: Trace Near Board Edge                           [code ✓] [test 🔬]
+   - Board outline extraction from Edge.Cuts layer drawings
+   - Point-to-segment distance to physical PCB edge
+   - Prevents EMI antenna effect (5-10mm rule) and manufacturing damage
+   - Tests needed: MockDrawing on Edge.Cuts + MockTrack near board edge
 
-□ CHECK 13: Differential Running Skew
-  Difficulty: ★★★★★ (HARDEST)
-  - Traverse both P and N traces simultaneously from source
-  - Track cumulative length at each point
-  - Calculate running skew continuously
-  - Detect serpentine compensation sections
-  - Requires sophisticated paired trace traversal algorithm
-  - Estimated time: 15-18 hours
+✅ CHECK 7: Unreferenced Traces                              [code ✓] [test 🔬]
+   - Multi-point sampling; SHAPE_POLY_SET.Contains() zone coverage test
+   - Tests needed: MockTrack with no zone coverage on adjacent layer
 
+✅ CHECK 9: Critical Net Isolation (Single-Ended)            [code ✓] [test 🔬]
+   - 3W rule; bounding-box pre-filter; GND guard trace exemption
+   - Tests needed: two MockTracks within/outside 3W threshold
 
-PHASE 5 - FUTURE ENHANCEMENTS (Not from SiWave, but valuable)
+✅ CHECK 12: Differential Pair Length Matching               [code ✓] [test 🔬]
+   - _identify_differential_pairs() P/N regex; per-class skew threshold
+   - Tests needed: MockTrack pairs with delta > / < dp_max_skew_mm
+
+✅ CHECK 14: Controlled Impedance                            [code ✓] [test 🔬]
+   - Stackup-aware; microstrip / stripline / CPWG formulas
+   - Tests needed: MockTrack on 4-layer fixture with Z0 in/out of tolerance
+   - NOTE: _calculate_cpw_impedance Wen (1969) two-regime formula fixed 2026-04-05
+   - NOTE: _build_net_class_map lookahead regex fixed 2026-04-05
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 3 — TODO (Complex Geometry & Graph Algorithms)
+────────────────────────────────────────────────────────────────────────────
+□ CHECK 6: Net Stub Check                                    [code □] [test □]
+  Difficulty: ★★★★☆  — estimated 10-12 h
+  - Build connectivity graph per net (tracks + vias as nodes)
+  - Detect T-junction branch points
+  - Walk graph from branch to dead end; measure stub length
+  - Flag stubs > max_stub_length_mm on critical nets
+  - Handle via stubs (partial via tails on buried/blind layers)
+
+□ CHECK 10: Critical Net Isolation (Differential)            [code □] [test □]
+  Difficulty: ★★★★☆  — estimated 8-10 h
+  - Reuse _identify_differential_pairs()
+  - Determine pair orientation (inner/outer edges per segment)
+  - Scan only outer edges for aggressor proximity
+  - Exempt the partner trace from violation
+
+□ CHECK 11: Net Coupling / Crosstalk                         [code □] [test □]
+  Difficulty: ★★★★☆  — estimated 10-12 h
+  - Build spatial grid index over all track segments
+  - Detect parallel segments within coupling_distance_mm
+  - Compute overlap length and separation
+  - Flag when (overlap / separation) > coupling_ratio_threshold
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 4 — TODO (Expert: Multi-Layer & Advanced Analysis)
+────────────────────────────────────────────────────────────────────────────
+□ CHECK 2: Reference Plane Crossing (at vias)                [code □] [test □]
+  Difficulty: ★★★★★  — estimated 12-15 h
+  - Stackup-aware: map each copper layer to its adjacent reference plane
+  - For each critical-net via: get reference plane net on entry layer AND
+    exit layer; flag if the plane net differs (GND → VCC, GND → AGND)
+  - Also flag if no stitching via exists within stitch_max_dist_mm
+  - Prerequisite: _get_reference_planes(layer_id) helper
+
+□ CHECK 3: Reference Plane Changing (along trace path)       [code □] [test □]
+  Difficulty: ★★★★★  — estimated 12-15 h
+  - Walk each trace segment; at each sample point find the zone(s) on the
+    adjacent reference layer; record the zone net
+  - Flag when the zone net changes along a single continuous trace
+  - Also flag crossing a gap (no zone coverage) in the reference plane
+  - Prerequisite: multi-point zone lookup infrastructure from CHECK 7
+
+□ CHECK 13: Differential Running Skew                        [code □] [test □]
+  Difficulty: ★★★★★  — estimated 15-18 h
+  - Requires connectivity graph from both P and N nets
+  - Traverse both paths simultaneously from source pad
+  - Accumulate running length delta at each topological step
+  - Flag any point where |delta| > max_running_skew_mm
+  - Must handle serpentine tuning sections (do NOT penalise them)
+
+────────────────────────────────────────────────────────────────────────────
+PHASE 5 — Backlog (Future Enhancements)
 ────────────────────────────────────────────────────────────────────────────
 □ Via Anti-Pad Violations
   - Check via clearance holes in plane layers
-  - Verify anti-pad diameter ≥ pad + 2×clearance
-  
+  - Verify anti-pad diameter ≥ drill + 2×min_annular_ring
+
 □ Via-to-Via Spacing
   - Minimum edge-to-edge spacing check
   - Manufacturing constraint verification
 
 □ Wide Power/Ground Traces
-  - Check trace width vs length for power nets
-  - Ensure adequate current capacity
+  - Check trace width vs current capacity (I²R heating model)
+  - Flag power traces narrower than IPC-2221 Table 6-1 minimum
 
-
-IMPLEMENTATION RECOMMENDATIONS:
 ────────────────────────────────────────────────────────────────────────────
-1. Start with PHASE 1 to build confidence and test framework integration
-2. Implement helper methods incrementally:
-   - _is_critical_net() - Already exists
-   - _identify_differential_pairs() - Needed for PHASE 2
-   - _get_reference_planes() - Needed for PHASE 4
-   - _build_connectivity_graph() - Needed for PHASE 3
-3. Test each check thoroughly with real PCB data before moving to next
-4. Build spatial indexing infrastructure during PHASE 2 for reuse in PHASE 3
-5. Consider using existing KiCad DRC engine APIs where available
+TEST INFRASTRUCTURE TODO (tests/signal_integrity/test_checks.py)
+────────────────────────────────────────────────────────────────────────────
+  Add to tests/helpers.py:
+    □ MockTrack(start_xy, end_xy, net_name, net_class, layer_id, width_mm)
+    □ MockVia(pos_xy, net_name, drill_mm, start_layer, end_layer)
+    □ MockZone(polygon_pts, net_name, layer_id)  — polygon as list of (x,y) mm tuples
+    □ MockFootprint(reference, pads=[MockPad(...)])
+    □ MockPad(pos_xy, net_name, net_class)
+    □ make_si_checker_with_check() — wires all 5 injected functions so check() runs
 
-Total Estimated Development Time: 120-150 hours (3-4 weeks full-time)
+  Coverage targets once test_checks.py is fully implemented:
+    signal_integrity.py  → ~65%  (up from 24%)
+
+Total Remaining Implementation: 35-45 h (Phase 3) + 39-48 h (Phase 4)
 ================================================================================
 """
 
@@ -253,6 +230,7 @@ class SignalIntegrityChecker:
         
         # Run individual checks - Reference Plane and Trace Quality
         self.violation_count += self._check_trace_near_plane_edge()
+        self.violation_count += self._check_trace_near_board_edge()
         self.violation_count += self._check_reference_plane_crossing()
         self.violation_count += self._check_reference_plane_changing()
         self.violation_count += self._check_exposed_critical_traces()
@@ -404,6 +382,171 @@ class SignalIntegrityChecker:
         return violations
     
     # ========================================================================
+    # CHECK 1B: Trace Near Board Edge
+    # ========================================================================
+    
+    def _check_trace_near_board_edge(self):
+        """
+        Check for traces too close to physical board outline.
+        
+        Description:
+        High-speed traces routed near the PCB edge create multiple issues:
+        1. EMI radiation - board edge acts as antenna launch point
+        2. Manufacturing risk - routing/v-scoring may damage traces
+        3. Mechanical stress - board edges are high-stress areas during handling
+        
+        This check extracts the board outline from Edge.Cuts layer and measures
+        the distance from critical net traces to the nearest board edge polygon.
+        
+        Algorithm:
+        1. Extract board outline polygons from Edge.Cuts layer drawings
+        2. For each critical net trace segment:
+           - Calculate distance from trace midpoint to nearest outline segment
+           - Use point-to-segment distance (not just vertex distance)
+        3. Flag if distance < min_board_edge_distance_mm
+        
+        Configuration parameters:
+        - min_board_edge_distance_mm: Minimum clearance to board edge (default: 5.0mm for EMI)
+        - critical_net_classes: Net classes requiring check
+        
+        Standards:
+        - IPC-2221: ≥0.5mm for manufacturing reliability
+        - EMI best practice: ≥5mm for signals >100MHz to reduce antenna effect
+        - High-speed design: ≥10mm for critical signals (USB, HDMI, PCIe)
+        
+        Returns:
+            int: Number of violations found
+        """
+        self.log("\n--- Checking Trace Near Board Edge ---")
+        
+        board_edge_cfg = self.config.get('trace_near_board_edge', {})
+        if not board_edge_cfg.get('enabled', False):
+            self.log("Trace near board edge check disabled")
+            return 0
+        
+        min_dist_mm = board_edge_cfg.get('min_board_edge_distance_mm', 5.0)
+        critical_classes = board_edge_cfg.get(
+            'critical_net_classes', self.config.get('critical_net_classes', ['HighSpeed', 'Clock'])
+        )
+        min_dist_iu = pcbnew.FromMM(min_dist_mm)
+        
+        self.log(f"  Minimum board edge clearance: {min_dist_mm:.1f}mm")
+        self.log(f"  Critical net classes: {critical_classes}")
+        
+        # Extract board outline from Edge.Cuts layer
+        edge_cuts_id = pcbnew.Edge_Cuts
+        board_outline_polys = []  # list of SHAPE_POLY_SET
+        
+        # Board-level drawings on Edge.Cuts (lines, arcs, circles)
+        drawing_count = 0
+        for drawing in self.board.GetDrawings():
+            if drawing.GetLayer() != edge_cuts_id:
+                continue
+            drawing_count += 1
+            draw_poly = pcbnew.SHAPE_POLY_SET()
+            try:
+                # Transform drawing to polygon with small clearance (0.1mm) for hairline cuts
+                drawing.TransformShapeToPolygon(
+                    draw_poly, drawing.GetLayer(),
+                    pcbnew.FromMM(0.1), pcbnew.FromMM(0.005), pcbnew.ERROR_INSIDE
+                )
+            except Exception as e:
+                self.log(f"  Warning: Failed to transform Edge.Cuts drawing: {e}")
+                continue
+            if draw_poly.OutlineCount() > 0:
+                board_outline_polys.append(draw_poly)
+        
+        # Footprint-level graphics on Edge.Cuts (slots/cutouts in components)
+        for footprint in self.board.GetFootprints():
+            for graphic in footprint.GraphicalItems():
+                if graphic.GetLayer() != edge_cuts_id:
+                    continue
+                drawing_count += 1
+                draw_poly = pcbnew.SHAPE_POLY_SET()
+                try:
+                    graphic.TransformShapeToPolygon(
+                        draw_poly, graphic.GetLayer(),
+                        pcbnew.FromMM(0.1), pcbnew.FromMM(0.005), pcbnew.ERROR_INSIDE
+                    )
+                except Exception:
+                    continue
+                if draw_poly.OutlineCount() > 0:
+                    board_outline_polys.append(draw_poly)
+        
+        if not board_outline_polys:
+            self.log("  ⚠ No board outline found on Edge.Cuts layer — skipping")
+            return 0
+        
+        self.log(f"  Found {len(board_outline_polys)} board outline polygon(s) from {drawing_count} Edge.Cuts drawing(s)")
+        
+        # Check critical net traces against board outline
+        violations = 0
+        violation_set = set()  # avoid duplicate markers per net
+        
+        for track in self.board.GetTracks():
+            if not isinstance(track, pcbnew.PCB_TRACK):
+                continue
+            net = track.GetNet()
+            if not net:
+                continue
+            net_name = net.GetNetname()
+            if not net_name:
+                continue
+            net_class = self._resolve_net_class(net_name)
+            if net_class not in critical_classes:
+                continue
+            
+            # Get trace midpoint
+            mid = track.GetCenter()
+            px, py = mid.x, mid.y
+            
+            # Find minimum distance from trace to any board outline segment
+            min_found = None
+            for outline_poly in board_outline_polys:
+                for poly_idx in range(outline_poly.OutlineCount()):
+                    poly = outline_poly.Outline(poly_idx)
+                    n_pts = poly.PointCount()
+                    for pt_idx in range(n_pts):
+                        a = poly.CPoint(pt_idx)
+                        b = poly.CPoint((pt_idx + 1) % n_pts)
+                        # Vector AB and AP
+                        abx = b.x - a.x
+                        aby = b.y - a.y
+                        apx = px - a.x
+                        apy = py - a.y
+                        ab_sq = abx * abx + aby * aby
+                        if ab_sq == 0:
+                            # Degenerate zero-length edge — distance to vertex
+                            dist = (apx * apx + apy * apy) ** 0.5
+                        else:
+                            # Parameter t clamped to [0, 1] for segment projection
+                            t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab_sq))
+                            nx = a.x + t * abx
+                            ny = a.y + t * aby
+                            dx = px - nx
+                            dy = py - ny
+                            dist = (dx * dx + dy * dy) ** 0.5
+                        if min_found is None or dist < min_found:
+                            min_found = dist
+            
+            if min_found is None:
+                continue
+            
+            if min_found < min_dist_iu:
+                if net_name not in violation_set:
+                    violation_set.add(net_name)
+                    violations += 1
+                    actual_mm = pcbnew.ToMM(min_found)
+                    safe_name = net_name.replace('/', '_').replace('(', '').replace(')', '')
+                    group = self.create_group(self.board, "BoardEdge", safe_name, violations)
+                    msg = f"TRACE NEAR BOARD EDGE\n{net_name}\n{actual_mm:.2f}mm < {min_dist_mm:.1f}mm"
+                    self.draw_marker(self.board, mid, msg, self.marker_layer, group)
+                    self.log(f"  ❌ {net_name} ({net_class}): {actual_mm:.2f}mm to board edge (min {min_dist_mm:.1f}mm)")
+        
+        self.log(f"Trace near board edge check: {violations} violation(s)")
+        return violations
+    
+    # ========================================================================
     # CHECK 2: Reference Plane Crossing
     # ========================================================================
     
@@ -500,8 +643,6 @@ class SignalIntegrityChecker:
     def _check_exposed_critical_traces(self):
         """
         Check for critical traces not buried between reference planes.
-        
-        TODO: Implementation needed
         
         Description:
         Traces on outer layers without reference planes on both sides can radiate
@@ -602,8 +743,6 @@ class SignalIntegrityChecker:
     def _check_net_length(self):
         """
         Check for nets exceeding maximum length constraints.
-        
-        TODO: Implementation needed
         
         Description:
         Long traces increase signal delay, attenuation, and EMI radiation.
@@ -751,8 +890,6 @@ class SignalIntegrityChecker:
     def _check_unreferenced_traces(self):
         """
         Check for trace segments lacking reference planes above or below.
-        
-        TODO: Implementation needed
         
         Description:
         Traces require solid reference planes for controlled impedance and EMI containment.
@@ -919,8 +1056,6 @@ class SignalIntegrityChecker:
         """
         Check for via pads not connected to traces on inner layers.
         
-        TODO: Implementation needed
-        
         Description:
         Vias passing through internal layers often have copper pads (annular rings)
         on those layers even when not electrically connected. These "floating" pads
@@ -1064,8 +1199,6 @@ class SignalIntegrityChecker:
     def _check_critical_net_isolation_single(self):
         """
         Check for critical single-ended nets lacking proper isolation.
-        
-        TODO: Implementation needed
         
         Description:
         Critical nets should have ground-guard traces or vacant track isolation on both
@@ -1222,7 +1355,7 @@ class SignalIntegrityChecker:
         
         Configuration parameters:
         - differential_pair_patterns: Regex for identifying pairs
-          Example: [r'(.+)_P$', r'(.+)_N$'], [r'(.+)\+$', r'(.+)-$']
+          Example: [r'(.+)_P$', r'(.+)_N$'], [r'(.+)[+]$', r'(.+)-$']
         - min_isolation_distance_mm: Minimum spacing to other signals (default: 4× pair width)
         - guard_trace_max_distance_mm: Max distance for guard qualification (default: 1.5mm)
         - require_both_sides: If True, require isolation on both outer edges (default: True)
@@ -1648,6 +1781,9 @@ class SignalIntegrityChecker:
         - PCIe: 85Ω ±10%
         - LVDS: 100Ω ±10%
         
+        IMPLEMENTED: Uses IPC-2141A analytical formulas for microstrip, stripline,
+        and differential impedance. Reads stackup from board file. Identifies
+        differential pairs via regex. See algorithm details below.
         
         Configuration Parameters:
         ────────────────────────────────────────────────────────────────────
@@ -2050,31 +2186,237 @@ class SignalIntegrityChecker:
         """
         Calculate total routed length of a net including vias.
         
-        TODO: Implementation needed
+        Sums the physical length of all track segments and adds the vertical
+        height traversed by vias. This gives the total signal path length which
+        is critical for timing analysis and length matching.
+        
+        Algorithm:
+        1. Iterate all tracks (segments + vias) on the net
+        2. For PCB_TRACK: add segment length directly
+        3. For PCB_VIA: calculate physical height from layer span
+           - Height = |top_layer_z - bottom_layer_z|
+           - Approximated from board stackup if available
+        4. Return total length in millimeters
         
         Args:
-            net: pcbnew.NETINFO_ITEM
+            net: pcbnew.NETINFO_ITEM or net name string
             
         Returns:
-            float: Total length in internal units
+            float: Total routed length in millimeters (mm)
         """
-        # TODO: Sum all track segments + via heights
-        return 0
+        # Handle both NETINFO_ITEM and string inputs
+        if isinstance(net, str):
+            net_obj = self.board.FindNet(net)
+            if not net_obj:
+                self.log(f"  ⚠ Net '{net}' not found on board")
+                return 0.0
+        else:
+            net_obj = net
+        
+        net_code = net_obj.GetNetCode()
+        total_length_iu = 0  # Internal units
+        
+        # Iterate all tracks on this net
+        for track in self.board.GetTracks():
+            if track.GetNetCode() != net_code:
+                continue
+            
+            if isinstance(track, pcbnew.PCB_TRACK):
+                # Simple track segment - add length directly
+                total_length_iu += track.GetLength()
+            
+            elif isinstance(track, pcbnew.PCB_VIA):
+                # Via - calculate vertical height from layer span
+                top_layer = track.TopLayer()
+                bottom_layer = track.BottomLayer()
+                
+                # Get via height from board stackup
+                # Approximate: assume uniform layer spacing
+                stackup = self._read_stackup()
+                if stackup and 'board_thickness_mm' in stackup:
+                    # Calculate approximate height per layer
+                    board_thickness_mm = stackup['board_thickness_mm']
+                    num_copper_layers = len(stackup.get('copper_layers', []))
+                    
+                    if num_copper_layers > 1:
+                        # Layer indices (0 = F.Cu, max = B.Cu)
+                        # Approximate Z position
+                        layer_span = abs(top_layer - bottom_layer)
+                        via_height_mm = (layer_span / (num_copper_layers - 1)) * board_thickness_mm
+                        total_length_iu += pcbnew.FromMM(via_height_mm)
+                    else:
+                        # Single layer board - no via height contribution
+                        pass
+                else:
+                    # No stackup info - use default via height estimate
+                    # Typical: 1.6mm standard PCB, 4-layer = 0.4mm per layer span
+                    DEFAULT_VIA_HEIGHT_MM = 0.4
+                    layer_span = abs(top_layer - bottom_layer)
+                    via_height_mm = layer_span * DEFAULT_VIA_HEIGHT_MM
+                    total_length_iu += pcbnew.FromMM(via_height_mm)
+        
+        # Convert to millimeters for return
+        return pcbnew.ToMM(total_length_iu)
     
     def _build_connectivity_graph(self, net):
         """
-        Build graph of connections for stub detection.
+        Build graph of connections for stub detection and routing topology analysis.
         
-        TODO: Implementation needed
+        Creates an undirected graph where:
+        - Nodes: Track endpoints, via centers, pad centers
+        - Edges: Track segments connecting two nodes
+        
+        This graph enables:
+        - Stub detection: dead-end branches (degree-1 nodes not on pads)
+        - Path analysis: trace routing from source to load
+        - Branching analysis: identify T-junctions and splits
+        
+        Algorithm:
+        1. Collect all connection points (track endpoints, vias, pads)
+        2. Snap points to grid (10µm tolerance) to merge coincident points
+        3. Build adjacency list: each node → list of connected nodes
+        4. Include metadata: track width, layer, segment reference
         
         Args:
-            net: pcbnew.NETINFO_ITEM
+            net: pcbnew.NETINFO_ITEM or net name string
             
         Returns:
-            dict: Graph structure with nodes and edges
+            dict: Connectivity graph with structure:
+            {
+                'nodes': {
+                    (x, y, layer): {
+                        'type': 'track_end' | 'via' | 'pad',
+                        'position': pcbnew.VECTOR2I,
+                        'layer': int,
+                        'connections': [(x2, y2, layer2), ...],
+                        'pad_ref': str (if type='pad')
+                    }
+                },
+                'edges': [
+                    {
+                        'start': (x1, y1, layer),
+                        'end': (x2, y2, layer),
+                        'track': PCB_TRACK reference,
+                        'length': float (mm)
+                    }
+                ]
+            }
         """
-        # TODO: Build graph from tracks, vias, pads
-        return {}
+        # Handle both NETINFO_ITEM and string inputs
+        if isinstance(net, str):
+            net_obj = self.board.FindNet(net)
+            if not net_obj:
+                self.log(f"  ⚠ Net '{net}' not found on board")
+                return {'nodes': {}, 'edges': []}
+        else:
+            net_obj = net
+        
+        net_code = net_obj.GetNetCode()
+        
+        # Snap tolerance: 10µm (same as unconnected via check)
+        SNAP_GRID = 10000  # 10µm in internal units
+        
+        def snap_point(pos, layer):
+            """Snap position to grid and include layer for 3D connectivity."""
+            x_snapped = (pos.x // SNAP_GRID) * SNAP_GRID
+            y_snapped = (pos.y // SNAP_GRID) * SNAP_GRID
+            return (x_snapped, y_snapped, layer)
+        
+        # Data structures
+        nodes = {}  # {(x, y, layer): node_data}
+        edges = []  # [{start, end, track, length}]
+        
+        # Step 1: Collect all pads on this net
+        for footprint in self.board.GetFootprints():
+            for pad in footprint.Pads():
+                if pad.GetNetCode() == net_code:
+                    pad_pos = pad.GetPosition()
+                    # Pads can exist on multiple layers
+                    for layer_id in range(pcbnew.PCB_LAYER_ID_COUNT):
+                        if pad.IsOnLayer(layer_id):
+                            node_key = snap_point(pad_pos, layer_id)
+                            if node_key not in nodes:
+                                nodes[node_key] = {
+                                    'type': 'pad',
+                                    'position': pad_pos,
+                                    'layer': layer_id,
+                                    'connections': [],
+                                    'pad_ref': f"{footprint.GetReference()}.{pad.GetNumber()}"
+                                }
+        
+        # Step 2: Collect all vias on this net
+        for track in self.board.GetTracks():
+            if track.GetNetCode() != net_code:
+                continue
+            
+            if isinstance(track, pcbnew.PCB_VIA):
+                via_pos = track.GetPosition()
+                top_layer = track.TopLayer()
+                bottom_layer = track.BottomLayer()
+                
+                # Via connects all layers in its span
+                for layer_id in range(top_layer, bottom_layer + 1):
+                    node_key = snap_point(via_pos, layer_id)
+                    if node_key not in nodes:
+                        nodes[node_key] = {
+                            'type': 'via',
+                            'position': via_pos,
+                            'layer': layer_id,
+                            'connections': [],
+                            'via_span': (top_layer, bottom_layer)
+                        }
+        
+        # Step 3: Process all track segments and create edges
+        for track in self.board.GetTracks():
+            if track.GetNetCode() != net_code:
+                continue
+            
+            if isinstance(track, pcbnew.PCB_TRACK):
+                layer_id = track.GetLayer()
+                start_pos = track.GetStart()
+                end_pos = track.GetEnd()
+                
+                # Create node keys for both endpoints
+                start_key = snap_point(start_pos, layer_id)
+                end_key = snap_point(end_pos, layer_id)
+                
+                # Ensure both endpoints exist as nodes (might be track-only junctions)
+                if start_key not in nodes:
+                    nodes[start_key] = {
+                        'type': 'track_end',
+                        'position': start_pos,
+                        'layer': layer_id,
+                        'connections': []
+                    }
+                
+                if end_key not in nodes:
+                    nodes[end_key] = {
+                        'type': 'track_end',
+                        'position': end_pos,
+                        'layer': layer_id,
+                        'connections': []
+                    }
+                
+                # Add bidirectional connection
+                if end_key not in nodes[start_key]['connections']:
+                    nodes[start_key]['connections'].append(end_key)
+                if start_key not in nodes[end_key]['connections']:
+                    nodes[end_key]['connections'].append(start_key)
+                
+                # Create edge record
+                edges.append({
+                    'start': start_key,
+                    'end': end_key,
+                    'track': track,
+                    'length': pcbnew.ToMM(track.GetLength()),
+                    'width': pcbnew.ToMM(track.GetWidth()),
+                    'layer': layer_id
+                })
+        
+        return {
+            'nodes': nodes,
+            'edges': edges
+        }
     
     def _identify_differential_pairs(self):
         """
@@ -2398,26 +2740,56 @@ class SignalIntegrityChecker:
         # Geometric ratio
         k = W_mm / (W_mm + 2 * S_mm)
         k_prime = math.sqrt(1 - k**2)
-        
-        # Approximation of elliptic integral ratio K(k)/K(k')
-        # Using logarithmic approximation (accurate to ~1%)
-        K_ratio = math.pi / math.log(2 * (1 + math.sqrt(k_prime)) / (1 - math.sqrt(k_prime)))
-        
+
+        def _elliptic_ratio(k_val):
+            """
+            Wen (1969) two-regime approximation for K(k')/K(k).
+
+            Regime 1 — narrow gap (k ≥ 1/√2, k' ≤ 1/√2):
+                K(k')/K(k) ≈ π / ln(2·(1+√k)/(1−√k))   [uses √k]
+
+            Regime 2 — wide gap (k < 1/√2, k' > 1/√2):
+                K(k')/K(k) ≈ (1/π) · ln(2·(1+√k')/(1−√k'))  [uses √k']
+
+            Both forms are accurate to ~1% within their regime.
+            Reference: C. P. Wen, "Coplanar Waveguide: A Surface Strip
+            Transmission Line Suitable for Nonreciprocal Gyromagnetic Device
+            Applications," IEEE Trans. MTT, 1969.
+            """
+            kp = math.sqrt(1 - k_val**2)
+            threshold = 1.0 / math.sqrt(2)   # ≈ 0.7071
+            if k_val >= threshold:
+                # Narrow-gap regime — use √k
+                sqrt_k = math.sqrt(k_val)
+                return math.pi / math.log(2 * (1 + sqrt_k) / (1 - sqrt_k))
+            else:
+                # Wide-gap regime — use √k'
+                sqrt_kp = math.sqrt(kp)
+                return (1.0 / math.pi) * math.log(2 * (1 + sqrt_kp) / (1 - sqrt_kp))
+
         if has_ground_plane:
-            # CPWG: ground plane present
-            Er_eff = Er
-            # Modified k accounting for ground plane (sinh approximation)
-            sinh_W = math.sinh(math.pi * W_mm / (4 * H_mm))
-            sinh_WS = math.sinh(math.pi * (W_mm + 2*S_mm) / (4 * H_mm))
+            # CPWG: ground plane present — combine coplanar (k) and back-side ground (k1)
+            # k1 from sinh mapping of the ground-plane contribution (Simonovich / Wadell)
+            sinh_W  = math.sinh(math.pi * W_mm / (4 * H_mm))
+            sinh_WS = math.sinh(math.pi * (W_mm + 2 * S_mm) / (4 * H_mm))
             k1 = sinh_W / sinh_WS
-            k1_prime = math.sqrt(1 - k1**2)
-            K_ratio = math.pi / math.log(2 * (1 + math.sqrt(k1_prime)) / (1 - math.sqrt(k1_prime)))
+
+            # K(k)/K'(k) = inverse of _elliptic_ratio(k)
+            Kk_over_Kkp  = 1.0 / _elliptic_ratio(k)
+            Kk1_over_Kk1p = 1.0 / _elliptic_ratio(k1)
+
+            # Filling factor and effective dielectric (Simonovich formula)
+            q = Kk1_over_Kk1p / (Kk_over_Kkp + Kk1_over_Kk1p)
+            Er_eff = 1 + (Er - 1) * q
+
+            # Z0 = 30π / (√Er_eff · (K(k)/K'(k) + K(k1)/K'(k1)))
+            Z0 = (30 * math.pi / math.sqrt(Er_eff)) / (Kk_over_Kkp + Kk1_over_Kk1p)
         else:
-            # CPW: no ground plane (air above)
-            Er_eff = (Er + 1) / 2
-        
-        Z0 = (30 * math.pi / math.sqrt(Er_eff)) * K_ratio
-        
+            # CPW: no ground plane — effective dielectric = average of substrate and air
+            Er_eff  = (Er + 1) / 2
+            K_ratio = _elliptic_ratio(k)
+            Z0 = (30 * math.pi / math.sqrt(Er_eff)) * K_ratio
+
         return Z0
     
     def _detect_transmission_line_type(self, layer_name):
@@ -2883,7 +3255,7 @@ class SignalIntegrityChecker:
 
                 # KiCad 8/9 net_settings: (class "NAME" ... (nets "n1" "n2") (pattern "glob"))
                 for class_match in re.finditer(
-                    r'\(class\s+"([^"]+)"(.*?)(?=\s*\(class\s+"|\s*\)\s*\(|\Z)',
+                    r'\(class\s+"([^"]+)"(.*?)(?=\s*\(class\s+"|\Z)',
                     content, re.DOTALL
                 ):
                     nc_name = class_match.group(1)

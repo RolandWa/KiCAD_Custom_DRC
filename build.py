@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Directory name must match what KiCad's plugin loader expects.
 # Using underscore form (not dots) so it's a valid Python identifier for import.
 PLUGIN_DIR_NAME = "com_github_RolandWa_emc_auditor"
-PLUGIN_IDENTIFIER = "com.github.RolandWa.emc.auditor"
+PLUGIN_IDENTIFIER = "com.github.RolandWa.emc_auditor"
 
 # Python source modules live under src/; assets at repo root.
 # Each entry is (repo_relative_path, destination_filename_in_package).

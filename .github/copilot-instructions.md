@@ -61,7 +61,7 @@ src/emc_auditor_plugin.py      ← Orchestrator: loads config, runs checkers, sh
 ├── src/emi_filtering.py       ← Connector filter topology (CISPR 32, IEC 61000)
 ├── src/ground_plane.py        ← Return path continuity under traces
 ├── src/clearance_creepage.py  ← IEC60664-1 / IPC2221 safety distances
-├── src/signal_integrity.py    ← Trace/via integrity checks (~2,400 lines; Phases 1–2 implemented, Phases 3–4 partially stubbed)
+├── src/signal_integrity.py    ← Trace/via integrity checks (~2,560 lines; Phases 1–2 implemented, Phases 3–4 partially stubbed)
 └── emc_rules.toml             ← All thresholds and enable/disable flags (root)
 ```
 
@@ -134,6 +134,24 @@ Never commit absolute paths, real usernames, company names, or credentials. Use 
 git diff --cached | Select-String -Pattern "C:\\Users\\[^<]|OneDrive - "
 git status --ignored | Select-String -Pattern "sync_to_kicad.ps1|test_config.py"
 ```
+
+## Pending Implementation
+
+The following checks exist as stubs (return 0, body is `# TODO` comments) and need implementation:
+
+| File | Method | Phase | Blocker helpers needed |
+|------|--------|-------|------------------------|
+| `signal_integrity.py` | `_check_net_stubs()` L672 | 3 | `_build_connectivity_graph()` |
+| `signal_integrity.py` | `_check_critical_net_isolation_differential()` L1173 | 3 | DP pair detection regex |
+| `signal_integrity.py` | `_check_net_coupling()` L1225 | 3 | `_find_parallel_segments()` |
+| `signal_integrity.py` | `_check_differential_pair_matching()` L1288 | 3 | `_calculate_trace_length()` |
+| `signal_integrity.py` | `_check_differential_running_skew()` L1424 | 3 | `_calculate_spacing_along_pair()` |
+| `signal_integrity.py` | `_check_reference_plane_crossing()` L~414 | 4 | `_get_reference_planes()`, `_extract_plane_boundaries()` |
+| `signal_integrity.py` | `_check_reference_plane_changing()` L~459 | 4 | `_get_reference_planes()`, `_extract_plane_boundaries()` |
+| `signal_integrity.py` | `_calculate_cpw_impedance()` L2352 | — | Wen 1969 elliptic integral |
+
+> **Helper priority**: implement `_build_connectivity_graph()`, `_calculate_trace_length()`, `_get_reference_planes()`, and `_extract_plane_boundaries()` first — multiple checks depend on each.
+> See [.github/instructions/signal-integrity.instructions.md](.github/instructions/signal-integrity.instructions.md) for full per-method implementation notes.
 
 ## Detailed Guides
 

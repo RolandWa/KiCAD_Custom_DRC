@@ -3,8 +3,16 @@
 ## Overview
 This document describes the algorithm for checking controlled impedance on PCB traces. The implementation validates that trace geometries match target impedances within specified tolerances.
 
+**✅ IMPLEMENTATION STATUS: FULLY IMPLEMENTED**
+- Microstrip impedance (outer layers) — IPC-2141A formulas
+- Stripline impedance (inner layers) — IPC-2141A formulas
+- Differential impedance — coupling coefficient method
+- Differential pair detection via regex pattern matching
+- Stackup parameter extraction from KiCad board file
+- Net assignment via net class and pattern matching
+
 **Integration with EMC Auditor Plugin**:
-- Part of `signal_integrity.py` module
+- Part of `signal_integrity.py` module (`_check_controlled_impedance()` method, ~490 LOC)
 - Uses same violation marking system as clearance/creepage checks
 - Violations drawn on **User.Comments layer** for visual inspection in KiCad
 - All markers grouped together for easy selection/deletion

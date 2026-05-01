@@ -1100,6 +1100,22 @@ critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
 reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND"]
 
 # ======================================================================
+# CHECK 1B: Trace Near Board Edge (EMI + Manufacturing)
+# ======================================================================
+[signal_integrity.trace_near_board_edge]
+enabled = true
+description = "Flag critical net traces routed too close to physical board outline (Edge.Cuts)"
+
+# Minimum distance from trace to board edge (mm)
+# - Manufacturing reliability (IPC-2221): ≥0.5mm prevents damage during routing/v-scoring
+# - EMI best practice: ≥5mm for signals >100MHz (board edge acts as antenna)
+# - High-speed critical signals (USB, HDMI, PCIe): ≥10mm recommended
+min_board_edge_distance_mm = 5.0
+
+# Net classes to check
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "50R"]
+
+# ======================================================================
 # CHECK 7: Unreferenced Traces
 # ======================================================================
 [signal_integrity.unreferenced_traces]

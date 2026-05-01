@@ -5,7 +5,19 @@ applyTo: "src/signal_integrity.py"
 
 # Signal Integrity Checker — Implementation Guide
 
-`signal_integrity.py` (~2,400 lines) has Phases 1–2 largely implemented. Several `_check_*()` methods carry a stale `TODO: Implementation needed` docstring but contain working code — **read the method body before writing new code**. Phases 3–4 checks are genuine stubs that return 0.
+`signal_integrity.py` (~2,400 lines) — **Phases 1–2 FULLY IMPLEMENTED** (~1,235 LOC working code), Phases 3–4 are stubs.
+
+**✅ Working Checks (Phase 1/2)**:
+- Net length limits per net class
+- Exposed critical traces on outer layers
+- Unconnected via pads (floating on internal layers)
+- Trace proximity to reference plane edge (point-to-segment distance)
+- **Trace proximity to board edge (Edge.Cuts outline, EMI + manufacturing)**
+- Unreferenced traces (multi-point sampling, zone containment)
+- Critical net isolation (3W rule, guard trace exemption)
+- Controlled impedance (microstrip + stripline + differential, IPC-2141A)
+
+**Note**: Some implemented methods have **stale `TODO: Implementation needed` docstrings** — these have been updated. Always read the method body to verify actual implementation status.
 
 ## Implementation Status
 
@@ -21,23 +33,44 @@ applyTo: "src/signal_integrity.py"
 | Check | Method | Status |
 |-------|--------|--------|
 | Trace Near Plane Edge | `_check_trace_near_plane_edge()` | ✅ Implemented |
+| Trace Near Board Edge | `_check_trace_near_board_edge()` | ✅ Implemented |
 | Unreferenced Traces | `_check_unreferenced_traces()` | ✅ Implemented |
 | Critical Net Isolation (SE) | `_check_critical_net_isolation_single()` | ✅ Implemented |
 | Controlled Impedance | `_check_controlled_impedance()` | ✅ Implemented (microstrip + stripline + differential) |
 
 ### Phase 3 — Advanced (Complex Geometry)
-| Check | Method | Status |
-|-------|--------|--------|
-| Critical Net Isolation (Diff) | `_check_critical_net_isolation_differential()` | ❌ Stub |
-| Crosstalk / Net Coupling | `_check_net_coupling()` | ❌ Stub |
-| Differential Pair Length Match | `_check_differential_pair_matching()` | ❌ Stub |
-| Differential Running Skew | `_check_differential_running_skew()` | ❌ Stub |
+| Check | Method | Line | Status |
+|-------|--------|------|--------|
+| Net Stub | `_check_net_stubs()` | 672 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Critical Net Isolation (Diff) | `_check_critical_net_isolation_differential()` | 1173 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Crosstalk / Net Coupling | `_check_net_coupling()` | 1225 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Differential Pair Length Match | `_check_differential_pair_matching()` | 1288 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Differential Running Skew | `_check_differential_running_skew()` | 1424 | ❌ Stub — body is `# TODO` comments only, returns 0 |
 
 ### Phase 4 — Expert (Multi-Layer)
-| Check | Method | Status |
-|-------|--------|--------|
-| Reference Plane Crossing | `_check_reference_plane_crossing()` | ❌ Stub |
-| Reference Plane Changing | `_check_reference_plane_changing()` | ❌ Stub |
+| Check | Method | Line | Status |
+|-------|--------|------|--------|
+| Reference Plane Crossing | `_check_reference_plane_crossing()` | ~414 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Reference Plane Changing | `_check_reference_plane_changing()` | ~459 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+
+### Helper Stubs — Required by Phase 3/4 Checks
+
+These helper methods exist in the file but return empty/zero results. Implement these **before** the parent check methods.
+
+| Helper | Line | Used By | What It Must Return |
+|--------|------|---------|---------------------|
+| `_get_reference_planes(signal_layer)` | 1990 | Phase 4 checks | `list[int]` — layer IDs of adjacent copper planes |
+| `_extract_plane_boundaries(plane_layer)` | 2005 | Phase 4 checks | `list[SHAPE_POLY_SET]` — polygons of copper zones on layer |
+| `_calculate_trace_length(net)` | 2020 | Phase 3 length-match | `float` mm — sum of all track segments + via heights |
+| `_build_connectivity_graph(net)` | 2035 | Stub check, coupling | `dict` adjacency graph: `{point → [adjacent_points]}` |
+| `_find_parallel_segments(segment, max_distance, angular_tolerance)` | 2111 | Net coupling | `list[PCB_TRACK]` — segments within distance running parallel |
+| `_calculate_spacing_along_pair(net_p, net_n, sample_interval_mm)` | 2130 | Running skew | `list[float]` — spacing samples between P/N traces |
+
+### Impedance Helpers — Partially Implemented
+
+| Method | Line | Status |
+|--------|------|--------|
+| `_calculate_cpw_impedance(W, S, H, Er, has_ground_plane)` | 2352 | ⚠️ Stub — elliptic integral (Wen 1969) not yet coded; returns approximation only |
 
 ## pcbnew API Patterns
 

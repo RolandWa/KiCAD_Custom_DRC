@@ -1,0 +1,14 @@
+(kicad_pcb (version 20221018) (generator pcbnew)
+
+  (setup
+    (stackup
+      (layer "F.Cu"        (type "copper")  (thickness 0.035052))
+      (layer "dielectric 1" (type "prepreg") (thickness 0.200000) (epsilon_r 4.3) (loss_tangent 0.020) (material "Generic FR4"))
+      (layer "B.Cu"        (type "copper")  (thickness 0.035052))
+      (copper_finish "HASL")
+    )
+  )
+
+  (pad_to_mask_clearance 0)
+
+)
