@@ -40,6 +40,19 @@ ground_net_patterns = ["GND", "GROUND", "VSS", "PGND", "AGND"]
 violation_message = "NO GND VIA"
 
 # ======================================================================
+# ADVANCED VIA STITCHING OPTIONS
+# ======================================================================
+
+# Enable GND plane stitching density checks (vias per area)
+check_gnd_plane_density = false
+min_stitch_vias_per_cm2 = 4.0  # Typical requirement: 4 vias per cm²
+
+# Enable board edge stitching checks (EMI shielding)
+check_edge_stitching = false
+max_edge_stitch_spacing_mm = 20.0  # Maximum spacing between edge vias
+edge_stitch_margin_mm = 2.0  # Distance from board edge to count as "edge via"
+
+# ======================================================================
 # DECOUPLING CAPACITOR RULES
 # ======================================================================
 [decoupling]
