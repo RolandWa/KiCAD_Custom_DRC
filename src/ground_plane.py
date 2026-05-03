@@ -108,6 +108,8 @@ class GroundPlaneChecker:
         check_both = self.config.get('check_both_sides', True)
         check_split_crossing = self.config.get('check_split_plane_crossing', True)  # NEW: Priority 2
         check_return_vias = self.config.get('check_return_via_continuity', True)  # NEW: Priority 3
+        check_min_coverage = self.config.get('check_minimum_coverage', False)  # NEW: Priority 4 (disabled by default)
+        min_coverage_percent = self.config.get('min_coverage_percent', 30.0)  # %
         return_via_max_dist_mm = self.config.get('return_via_max_distance_mm', 3.0)  # mm
         ignore_via_clearance_mm = self.config.get('ignore_via_clearance', 0.5)  # mm
         ignore_pad_clearance_mm = self.config.get('ignore_pad_clearance', 0.3)  # mm
@@ -118,6 +120,9 @@ class GroundPlaneChecker:
         self.log(f"Check clearance: {check_clearance}")
         self.log(f"Check split crossing: {check_split_crossing}")
         self.log(f"Check return vias: {check_return_vias}")
+        self.log(f"Check minimum coverage: {check_min_coverage}")
+        if check_min_coverage:
+            self.log(f"Minimum coverage: {min_coverage_percent}%")
         self.log(f"Return via max distance: {return_via_max_dist_mm} mm")
         self.log(f"Check both sides: {check_both}")
         self.log(f"Ignore via clearance: {ignore_via_clearance_mm} mm")
@@ -442,6 +447,16 @@ class GroundPlaneChecker:
             violations += return_via_violations
             self.log(f"✓ Return via check complete: {return_via_violations} violations", force=True)
         
+        # ========== PRIORITY 4: Check minimum ground plane coverage ==========
+        if check_min_coverage:
+            self.log("\n=== MINIMUM COVERAGE CHECK ===", force=True)
+            coverage_violations = self._check_minimum_coverage(
+                ground_zones, min_coverage_percent,
+                draw_marker_func, create_group_func
+            )
+            violations += coverage_violations
+            self.log(f"✓ Coverage check complete: {coverage_violations} violations", force=True)
+        
         return violations
     
     def _check_split_plane_crossing(self, track, start, end, num_samples, layers_to_check,
@@ -608,6 +623,74 @@ class GroundPlaneChecker:
                 violations += 1
             else:
                 self.log(f"    ✓ Via on '{via_net}' OK (return via {pcbnew.ToMM(min_dist):.2f}mm away)")
+        
+        return violations
+    
+    def _check_minimum_coverage(self, ground_zones, min_coverage_percent,
+                                draw_marker_func, create_group_func):
+        """
+        PRIORITY 4: Check that ground plane covers a minimum percentage of board area.
+        
+        Ensures adequate ground plane coverage for EMC compliance.
+        Typical minimums: 30% (low-speed), 60% (high-speed), 90% (RF).
+        
+        Algorithm:
+        1. Calculate total board area (bounding box)
+        2. Calculate total ground zone area
+        3. Check if coverage percentage meets minimum
+        4. If not, create global violation marker at board center
+        
+        Args:
+            ground_zones: list[ZONE] - all ground plane zones
+            min_coverage_percent: float - minimum required coverage (%)
+            draw_marker_func: Function to draw violation markers
+            create_group_func: Function to create PCB groups
+        
+        Returns:
+            int: Number of violations (0 or 1)
+        """
+        violations = 0
+        
+        # Get board bounding box
+        board_bbox = self.board.GetBoardEdgesBoundingBox()
+        board_area_mm2 = pcbnew.ToMM(board_bbox.GetWidth()) * pcbnew.ToMM(board_bbox.GetHeight())
+        
+        self.log(f"Board area: {board_area_mm2:.1f} mm²")
+        
+        if board_area_mm2 == 0:
+            self.log("⚠️  Board area is zero, skipping coverage check")
+            return 0
+        
+        # Calculate total ground zone area
+        total_gnd_area_mm2 = 0.0
+        for zone in ground_zones:
+            zone_area = zone.GetFilledArea()  # Internal units squared
+            zone_area_mm2 = (pcbnew.ToMM(1) ** 2) * zone_area  # Convert to mm²
+            total_gnd_area_mm2 += zone_area_mm2
+            self.log(f"  Zone '{zone.GetNetname()}' on layer {zone.GetLayer()}: {zone_area_mm2:.1f} mm²")
+        
+        self.log(f"Total ground area: {total_gnd_area_mm2:.1f} mm²")
+        
+        # Calculate coverage percentage
+        coverage_percent = (total_gnd_area_mm2 / board_area_mm2) * 100.0
+        self.log(f"Ground coverage: {coverage_percent:.1f}%", force=True)
+        
+        # Check if coverage meets minimum
+        if coverage_percent < min_coverage_percent:
+            self.log(f"❌ INSUFFICIENT COVERAGE: {coverage_percent:.1f}% < {min_coverage_percent}%", force=True)
+            
+            # Create violation marker at board center
+            violation_group = create_group_func(self.board, "GndCoverage", "GLOBAL", 1)
+            
+            board_center_x = board_bbox.GetLeft() + board_bbox.GetWidth() // 2
+            board_center_y = board_bbox.GetTop() + board_bbox.GetHeight() // 2
+            board_center = pcbnew.VECTOR2I(board_center_x, board_center_y)
+            
+            msg = f"GND COVERAGE: {coverage_percent:.1f}% < {min_coverage_percent}%"
+            draw_marker_func(self.board, board_center, msg, self.marker_layer, violation_group)
+            violations = 1
+        else:
+            self.log(f"✓ Coverage OK: {coverage_percent:.1f}% >= {min_coverage_percent}%", force=True)
         
         return violations
     

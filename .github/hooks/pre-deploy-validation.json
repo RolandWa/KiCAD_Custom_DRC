@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "BeforeToolUse": [
+      {
+        "type": "command",
+        "tools": ["run_in_terminal"],
+        "windows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if ($args[0] -match 'sync_to_kicad.ps1') { python -m py_compile src/*.py 2>&1 | Out-String }\"",
+        "message": "Validating Python syntax before deployment...",
+        "timeout": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File .github/hooks/scripts/check-staged-security.ps1",
+        "timeout": 15
+      }
+    ]
+  }
+}

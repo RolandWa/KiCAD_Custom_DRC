@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 # Always import mock classes for testing
-from tests.helpers import MockBoard, MockZone, MockTrack, MockVia, MockPad, MockFootprint
+from tests.helpers import MockBoard, MockZone, MockTrack, MockVia, MockPad, MockFootprint, MockBoundingBox
 
 # pcbnew will be available via conftest.py mock
 import pcbnew
@@ -274,37 +274,86 @@ class TestPlaneSplitCrossing:
     - Double tracks for high-current paths
     """
 
-    @pytest.mark.skip(reason="TODO: implement MockZone for two adjacent zones (GND and VCC)")
     def test_trace_crossing_split_boundary_flagged(self):
         """
         Test Case: Trace crosses from GND zone to VCC zone
         Expected: Violation marker at split crossing
         
         Setup:
-        - Signal trace on F.Cu crossing split boundary
-        - In1.Cu has two zones: GND (left half) and VCC (right half)
+        - Signal trace on F.Cu crossing split boundary (0,0) to (20,0)
+        - In1.Cu has two zones: GND (left half, 0-10mm) and VCC (right half, 10-20mm)
         - Trace starts over GND, ends over VCC
         
         Expected Behavior:
         - Split crossing detected: GND→VCC
         - Violation marker at crossing point
         - Message: "SPLIT PLANE CROSSING: GND→VCC"
-        - Group name: EMC_GndPlaneSplit_SIGNAL_1
         """
-        if MOCK_PCBNEW:
-            pytest.skip("Requires MockZone with boundary detection")
+        import pcbnew
         
-        # TODO: Create MockBoard with:
-        # - MockTrack (signal net, crossing split)
-        # - MockZone (GND net, left half of board)
-        # - MockZone (VCC net, right half of board)
-        # - Config: check_split_plane_crossing=True
+        # GND zone on left half (0-10mm)
+        gnd_zone = MockZone(
+            net_name="GND",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(0), pcbnew.FromMM(-5), pcbnew.FromMM(10), pcbnew.FromMM(5))]
+        )
         
-        # TODO: Run checker.check()
-        # TODO: Assert violations == 1
-        # TODO: Assert marker message contains "SPLIT PLANE CROSSING"
+        # VCC zone on right half (10-20mm)
+        vcc_zone = MockZone(
+            net_name="VCC",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(10), pcbnew.FromMM(-5), pcbnew.FromMM(20), pcbnew.FromMM(5))]
+        )
+        
+        # Signal trace crossing from left to right (GND → VCC)
+        track = MockTrack(
+            net_name="USB_D+",
+            start=pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)),
+            end=pcbnew.VECTOR2I(pcbnew.FromMM(20), pcbnew.FromMM(0)),
+            layer=0,  # F.Cu
+            net_class="HighSpeed"
+        )
+        
+        board = MockBoard(tracks=[track], zones=[gnd_zone, vcc_zone], copper_layer_count=4)
+        
+        # Config with split crossing check ENABLED
+        config = {
+            'enabled': True,
+            'check_continuity_under_trace': False,
+            'check_clearance_around_trace': False,
+            'check_split_plane_crossing': True,  # ENABLED
+            'check_return_via_continuity': False,
+            'critical_net_classes': ['HighSpeed', 'Clock'],
+            'ground_net_patterns': ['GND', 'VCC'],  # Both are reference planes
+            'ground_plane_check_layers': 'all',
+            'sampling_interval_mm': 0.5,
+            'min_ground_polygon_area_mm2': 10.0
+        }
+        
+        report_lines = []
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=pcbnew.User_1,
+            config=config,
+            report_lines=report_lines,
+            verbose=True,
+            auditor=None
+        )
+        
+        # Run check
+        violations = checker.check(
+            draw_marker_func=lambda *args: None,
+            draw_arrow_func=lambda *args: None,
+            get_distance_func=lambda p1, p2: ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5,
+            log_func=lambda msg, force=False: None,
+            create_group_func=lambda board, typ, id, num: None
+        )
+        
+        # Assert violation detected
+        assert violations >= 1, f"Expected at least 1 violation for split crossing, got {violations}"
 
-    @pytest.mark.skip(reason="TODO: implement MockZone for single zone coverage")
     def test_trace_within_single_pour_no_violation(self):
         """
         Test Case: Trace stays entirely within one zone
@@ -318,10 +367,63 @@ class TestPlaneSplitCrossing:
         - No zone transitions detected
         - violations == 0
         """
-        if MOCK_PCBNEW:
-            pytest.skip("Requires MockZone implementation")
+        import pcbnew
+        
+        # Single large GND zone covering entire area
+        gnd_zone = MockZone(
+            net_name="GND",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(0), pcbnew.FromMM(-5), pcbnew.FromMM(20), pcbnew.FromMM(5))]
+        )
+        
+        # Signal trace staying within GND zone
+        track = MockTrack(
+            net_name="SPI_CLK",
+            start=pcbnew.VECTOR2I(pcbnew.FromMM(2), pcbnew.FromMM(0)),
+            end=pcbnew.VECTOR2I(pcbnew.FromMM(18), pcbnew.FromMM(0)),
+            layer=0,  # F.Cu
+            net_class="HighSpeed"
+        )
+        
+        board = MockBoard(tracks=[track], zones=[gnd_zone], copper_layer_count=4)
+        
+        # Config with split crossing check ENABLED
+        config = {
+            'enabled': True,
+            'check_continuity_under_trace': False,
+            'check_clearance_around_trace': False,
+            'check_split_plane_crossing': True,  # ENABLED
+            'check_return_via_continuity': False,
+            'critical_net_classes': ['HighSpeed', 'Clock'],
+            'ground_net_patterns': ['GND'],
+            'ground_plane_check_layers': 'all',
+            'sampling_interval_mm': 0.5,
+            'min_ground_polygon_area_mm2': 10.0
+        }
+        
+        report_lines = []
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=pcbnew.User_1,
+            config=config,
+            report_lines=report_lines,
+            verbose=True,
+            auditor=None
+        )
+        
+        # Run check
+        violations = checker.check(
+            draw_marker_func=lambda *args: None,
+            draw_arrow_func=lambda *args: None,
+            get_distance_func=lambda p1, p2: ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5,
+            log_func=lambda msg, force=False: None,
+            create_group_func=lambda board, typ, id, num: None
+        )
+        
+        # Assert no violations (trace stayed in one zone)
+        assert violations == 0, f"Expected 0 violations for trace within single zone, got {violations}"
 
-    @pytest.mark.skip(reason="TODO: implement net class filtering")
     def test_low_speed_net_over_split_skipped(self):
         """
         Test Case: Low-frequency net crosses split (should be ignored)
@@ -336,8 +438,70 @@ class TestPlaneSplitCrossing:
         - Check skipped
         - violations == 0
         """
-        if MOCK_PCBNEW:
-            pytest.skip("Requires net class filtering")
+        import pcbnew
+        
+        # GND zone on left half (0-10mm)
+        gnd_zone = MockZone(
+            net_name="GND",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(0), pcbnew.FromMM(-5), pcbnew.FromMM(10), pcbnew.FromMM(5))]
+        )
+        
+        # VCC zone on right half (10-20mm)
+        vcc_zone = MockZone(
+            net_name="VCC",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(10), pcbnew.FromMM(-5), pcbnew.FromMM(20), pcbnew.FromMM(5))]
+        )
+        
+        # LOW-SPEED signal trace crossing split (should be ignored)
+        track = MockTrack(
+            net_name="LED_STATUS",
+            start=pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)),
+            end=pcbnew.VECTOR2I(pcbnew.FromMM(20), pcbnew.FromMM(0)),
+            layer=0,  # F.Cu
+            net_class="Default"  # NOT in critical_net_classes
+        )
+        
+        board = MockBoard(tracks=[track], zones=[gnd_zone, vcc_zone], copper_layer_count=4)
+        
+        # Config with split crossing check ENABLED (but track not in critical classes)
+        config = {
+            'enabled': True,
+            'check_continuity_under_trace': False,
+            'check_clearance_around_trace': False,
+            'check_split_plane_crossing': True,  # ENABLED
+            'check_return_via_continuity': False,
+            'critical_net_classes': ['HighSpeed', 'Clock'],  # "Default" NOT included
+            'ground_net_patterns': ['GND', 'VCC'],
+            'ground_plane_check_layers': 'all',
+            'sampling_interval_mm': 0.5,
+            'min_ground_polygon_area_mm2': 10.0
+        }
+        
+        report_lines = []
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=pcbnew.User_1,
+            config=config,
+            report_lines=report_lines,
+            verbose=True,
+            auditor=None
+        )
+        
+        # Run check
+        violations = checker.check(
+            draw_marker_func=lambda *args: None,
+            draw_arrow_func=lambda *args: None,
+            get_distance_func=lambda p1, p2: ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5,
+            log_func=lambda msg, force=False: None,
+            create_group_func=lambda board, typ, id, num: None
+        )
+        
+        # Assert no violations (low-speed net ignored)
+        assert violations == 0, f"Expected 0 violations for low-speed net, got {violations}"
 
 
 # ========================================================================
@@ -551,7 +715,6 @@ class TestMinimumPlaneArea:
     Typical minimums: 30% (low-speed), 60% (high-speed), 90% (RF).
     """
 
-    @pytest.mark.skip(reason="TODO: implement board area calculation")
     def test_insufficient_plane_coverage_flagged(self):
         """
         Test Case: Ground plane covers < min_coverage_percent
@@ -564,13 +727,77 @@ class TestMinimumPlaneArea:
         
         Expected Behavior:
         - Coverage: 20% < 30% → VIOLATION
-        - Global marker drawn (center of board?)
+        - Global marker drawn (center of board)
         - Message: "GND COVERAGE: 20% < 30%"
         """
-        if MOCK_PCBNEW:
-            pytest.skip("Requires board area calculation")
+        import pcbnew
+        
+        # Small ground zone: 40mm x 50mm = 2,000mm² (20% of 10,000mm²)
+        small_zone = MockZone(
+            net_name="GND",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(0), pcbnew.FromMM(0), pcbnew.FromMM(40), pcbnew.FromMM(50))]
+        )
+        
+        # Dummy track to prevent early bailout
+        dummy_track = MockTrack(
+            net_name="CLK",
+            start=pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)),
+            end=pcbnew.VECTOR2I(pcbnew.FromMM(1), pcbnew.FromMM(0)),
+            layer=0,
+            net_class="HighSpeed"
+        )
+        
+        # Board with 100mm x 100mm bounding box
+        board_bbox = MockBoundingBox(
+            pcbnew.FromMM(0), pcbnew.FromMM(0),
+            pcbnew.FromMM(100), pcbnew.FromMM(100)
+        )
+        
+        board = MockBoard(
+            tracks=[dummy_track],
+            zones=[small_zone],
+            copper_layer_count=4,
+            board_bbox=board_bbox
+        )
+        
+        # Config with minimum coverage check ENABLED
+        config = {
+            'enabled': True,
+            'check_continuity_under_trace': False,
+            'check_clearance_around_trace': False,
+            'check_split_plane_crossing': False,
+            'check_return_via_continuity': False,
+            'check_minimum_coverage': True,  # ENABLED
+            'min_coverage_percent': 30.0,    # Require 30%
+            'critical_net_classes': ['HighSpeed', 'Clock'],
+            'ground_net_patterns': ['GND'],
+            'min_ground_polygon_area_mm2': 10.0
+        }
+        
+        report_lines = []
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=pcbnew.User_1,
+            config=config,
+            report_lines=report_lines,
+            verbose=True,
+            auditor=None
+        )
+        
+        # Run check
+        violations = checker.check(
+            draw_marker_func=lambda *args: None,
+            draw_arrow_func=lambda *args: None,
+            get_distance_func=lambda p1, p2: ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5,
+            log_func=lambda msg, force=False: None,
+            create_group_func=lambda board, typ, id, num: None
+        )
+        
+        # Assert violation detected
+        assert violations >= 1, f"Expected at least 1 violation for insufficient coverage, got {violations}"
 
-    @pytest.mark.skip(reason="TODO: implement board area calculation")
     def test_adequate_plane_coverage_no_violation(self):
         """
         Test Case: Ground plane exceeds minimum coverage
@@ -585,8 +812,73 @@ class TestMinimumPlaneArea:
         - Coverage: 80% > 30% → PASS
         - violations == 0
         """
-        if MOCK_PCBNEW:
-            pytest.skip("Requires board area calculation")
+        import pcbnew
+        
+        # Large ground zone: 80mm x 100mm = 8,000mm² (80% of 10,000mm²)
+        large_zone = MockZone(
+            net_name="GND",
+            layer=1,  # In1.Cu
+            filled=True,
+            coverage_rects=[(pcbnew.FromMM(0), pcbnew.FromMM(0), pcbnew.FromMM(80), pcbnew.FromMM(100))]
+        )
+        
+        # Dummy track to prevent early bailout
+        dummy_track = MockTrack(
+            net_name="SPI_CLK",
+            start=pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0)),
+            end=pcbnew.VECTOR2I(pcbnew.FromMM(1), pcbnew.FromMM(0)),
+            layer=0,
+            net_class="HighSpeed"
+        )
+        
+        # Board with 100mm x 100mm bounding box
+        board_bbox = MockBoundingBox(
+            pcbnew.FromMM(0), pcbnew.FromMM(0),
+            pcbnew.FromMM(100), pcbnew.FromMM(100)
+        )
+        
+        board = MockBoard(
+            tracks=[dummy_track],
+            zones=[large_zone],
+            copper_layer_count=4,
+            board_bbox=board_bbox
+        )
+        
+        # Config with minimum coverage check ENABLED
+        config = {
+            'enabled': True,
+            'check_continuity_under_trace': False,
+            'check_clearance_around_trace': False,
+            'check_split_plane_crossing': False,
+            'check_return_via_continuity': False,
+            'check_minimum_coverage': True,  # ENABLED
+            'min_coverage_percent': 30.0,    # Require 30%
+            'critical_net_classes': ['HighSpeed', 'Clock'],
+            'ground_net_patterns': ['GND'],
+            'min_ground_polygon_area_mm2': 10.0
+        }
+        
+        report_lines = []
+        checker = GroundPlaneChecker(
+            board=board,
+            marker_layer=pcbnew.User_1,
+            config=config,
+            report_lines=report_lines,
+            verbose=True,
+            auditor=None
+        )
+        
+        # Run check
+        violations = checker.check(
+            draw_marker_func=lambda *args: None,
+            draw_arrow_func=lambda *args: None,
+            get_distance_func=lambda p1, p2: ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5,
+            log_func=lambda msg, force=False: None,
+            create_group_func=lambda board, typ, id, num: None
+        )
+        
+        # Assert no violations (coverage is adequate)
+        assert violations == 0, f"Expected 0 violations for adequate coverage, got {violations}"
 
 
 # ========================================================================

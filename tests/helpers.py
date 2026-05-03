@@ -122,6 +122,7 @@ class MockBoard:
         zones: list = None,
         footprints: list = None,
         copper_layer_count: int = 4,
+        board_bbox = None,
     ):
         self._file = board_file
         self._nets = nets or []
@@ -130,6 +131,12 @@ class MockBoard:
         self._zones = zones or []
         self._footprints = footprints or []
         self._copper_layer_count = copper_layer_count
+        # Default board bounding box: 100mm x 100mm
+        import pcbnew
+        self._board_bbox = board_bbox or MockBoundingBox(
+            pcbnew.FromMM(0), pcbnew.FromMM(0), 
+            pcbnew.FromMM(100), pcbnew.FromMM(100)
+        )
 
     def GetFileName(self) -> str:
         return self._file
@@ -163,6 +170,10 @@ class MockBoard:
 
     def GetFootprints(self):
         return self._footprints
+    
+    def GetBoardEdgesBoundingBox(self):
+        """Return bounding box of board edges."""
+        return self._board_bbox
 
 
 class MockBoundingBox:
@@ -179,6 +190,12 @@ class MockBoundingBox:
     
     def GetHeight(self):
         return abs(self.y2 - self.y1)
+    
+    def GetLeft(self):
+        return min(self.x1, self.x2)
+    
+    def GetTop(self):
+        return min(self.y1, self.y2)
 
 
 class MockZone:
@@ -222,6 +239,19 @@ class MockZone:
     
     def GetBoundingBox(self) -> MockBoundingBox:
         return self._bbox
+    
+    def GetFilledArea(self) -> int:
+        """
+        Return the filled area in internal units squared.
+        Calculates sum of all coverage rectangles.
+        """
+        total_area = 0
+        for rect in self._coverage_rects:
+            x1, y1, x2, y2 = rect
+            width = abs(x2 - x1)
+            height = abs(y2 - y1)
+            total_area += width * height
+        return total_area
     
     def HitTestFilledArea(self, layer: int, pos) -> bool:
         """

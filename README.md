@@ -124,6 +124,8 @@ See [emc_rules_examples.toml](emc_rules_examples.toml) for configuration templat
 
 **Quick Start**: Read [VIA_STITCHING.md](VIA_STITCHING.md) or [DECOUPLING.md](DECOUPLING.md) to understand implemented rules
 
+**Configuration**: See [TOML_CONFIG_GUIDE.md](docs/TOML_CONFIG_GUIDE.md) for rules on editing `emc_rules.toml` (critical to prevent plugin load failures)
+
 **Safety Compliance**: See clearance/creepage documentation for high-voltage designs:
 - [CLEARANCE_CREEPAGE_GUIDE.md](CLEARANCE_CREEPAGE_GUIDE.md) - Complete implementation guide (546 lines)
 - [CLEARANCE_QUICK_REF.md](CLEARANCE_QUICK_REF.md) - Quick lookup tables (208 lines)

@@ -19,22 +19,26 @@
 python -c "import ast; ast.parse(open('src/signal_integrity.py', encoding='utf-8').read()); print('OK')"
 # Or: python -m py_compile src/emc_auditor_plugin.py
 
-# 2. Deploy to KiCad plugins directory (copies all 9 files + clears __pycache__)
+# 2. TOML configuration validation (CRITICAL - prevents plugin load failures)
+pytest tests/test_build_system/test_config_validation.py -v
+# Or quick check: python -c "import tomllib; f = open('emc_rules.toml', 'rb'); tomllib.load(f); print('✓ Valid')"
+
+# 3. Deploy to KiCad plugins directory (copies all files + clears __pycache__)
 .\sync_to_kicad.ps1
 # Note: Python 3.11+ uses built-in tomllib; Python 3.8–3.10 requires: pip install tomli
 
-# 3. Launch KiCad 9.0 — plugin reloads automatically on next run
+# 4. Launch KiCad 9.0 — plugin reloads automatically on next run
 Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
 # Or with full debug logging + PCB screenshots (uses launch_kicad_debug.ps1 pattern):
 $env:ORTHO_DEBUG = '1'; Start-Process "C:\Program Files\KiCad\9.0\bin\kicad.exe"
 
-# 4. In KiCad: open board → PCB Editor → Tools → External Plugins → EMC Auditor
+# 5. In KiCad: open board → PCB Editor → Tools → External Plugins → EMC Auditor
 # Full test: baseline = 40 violations (via:0, decoupling:9, ground:4, emi:22, clearance:4, signal:1+)
 ```
 
-**Deploy workflow (one-liner):**
+**Deploy workflow (one-liner with TOML validation):**
 ```powershell
-python -c "import ast; ast.parse(open('src/signal_integrity.py',encoding='utf-8').read())" && .\sync_to_kicad.ps1
+python -c "import tomllib; tomllib.load(open('emc_rules.toml', 'rb')); import ast; ast.parse(open('src/signal_integrity.py', encoding='utf-8').read())" && .\sync_to_kicad.ps1
 ```
 
 ### Testing Infrastructure
@@ -92,6 +96,57 @@ The `PluginsDir` in `sync_to_kicad.ps1` points to:
 `C:\Users\<YourUsername>\<OneDrive>\Simulation tools\KiCad\9.0\3rdparty\plugins`
 
 **Never edit the KiCad copy directly** — it will be overwritten on next sync.
+
+### TOML Configuration Rules (CRITICAL)
+
+**Python's `tomllib` strictly enforces TOML 1.0.0 specification.** Syntax errors prevent plugin from loading entirely.
+
+#### Duplicate Key Rule (Most Common Error)
+❌ **FORBIDDEN** — Same key twice in same section:
+```toml
+[ground_plane]
+min_coverage_percent = 30.0
+min_coverage_percent = 40.0  # ✗ Error: Cannot overwrite a value
+```
+
+✅ **ALLOWED** — Same key in different sections:
+```toml
+[section1]
+key = "value1"
+
+[section2]
+key = "value2"  # ✓ Different sections OK
+```
+
+#### File Mode Requirement
+```python
+# ✅ Correct: binary mode required
+with open('emc_rules.toml', 'rb') as f:
+    config = tomllib.load(f)
+
+# ❌ Wrong: text mode will fail
+with open('emc_rules.toml', 'r') as f:
+    config = tomllib.load(f)  # TypeError: a bytes-like object is required
+```
+
+#### Validation Workflow
+**ALWAYS validate TOML before deploying:**
+```powershell
+# 1. Run TOML validation tests
+pytest tests/test_build_system/test_config_validation.py -v
+
+# 2. Quick syntax check
+python -c "import tomllib; f = open('emc_rules.toml', 'rb'); tomllib.load(f); print('✓ Valid')"
+
+# 3. Deploy if valid
+.\sync_to_kicad.ps1
+```
+
+**Tests:** [tests/test_build_system/test_config_validation.py](../tests/test_build_system/test_config_validation.py) (36 tests)
+- TOML syntax validation
+- Duplicate key detection per section (100% coverage - all 10 sections)
+- Required sections/keys presence (100% coverage - all 10 sections)
+- Numeric range validation (percentages 0-100, distances > 0)
 
 ## Architecture
 
@@ -171,6 +226,8 @@ class NewChecker:
 - **Do NOT** use VECTOR2I as dict keys — convert to string first (`f"{pos.x}_{pos.y}"`)
 - **Do NOT** edit the KiCad copy of `emc_rules.toml` — edit the repo root version
 - **Do NOT** print Unicode characters directly in tests — use `.encode('ascii', 'replace').decode('ascii')` for Windows console compatibility
+- **Do NOT** create duplicate keys in TOML sections — validate with `pytest tests/test_build_system/test_config_validation.py` before deploying
+- **Do NOT** open TOML files in text mode — always use binary mode (`'rb'`) with `tomllib.load()`
 
 ## Security — Pre-Commit Mandatory
 

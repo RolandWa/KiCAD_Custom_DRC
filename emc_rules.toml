@@ -24,7 +24,7 @@ verbose_logging = true
 # VIA STITCHING RULES
 # ======================================================================
 [via_stitching]
-enabled = false  # Disabled for focused creepage testing
+enabled = true
 description = "Verifies that critical signal vias have nearby GND return vias"
 
 # Maximum distance from critical via to nearest GND via (mm)
@@ -43,7 +43,7 @@ violation_message = "NO GND VIA"
 # DECOUPLING CAPACITOR RULES
 # ======================================================================
 [decoupling]
-enabled = false  # Disabled for focused creepage testing
+enabled = true
 description = "Verifies proximity of decoupling capacitors to IC power pins"
 
 # Maximum distance from IC power pin to nearest capacitor (mm)
@@ -82,7 +82,7 @@ via_search_radius_mm = 2.0  # Search radius around capacitor pads for vias
 # TRACE WIDTH RULES (Future Implementation)
 # ======================================================================
 [trace_width]
-enabled = false 
+enabled = true
 description = "Verifies minimum trace widths for high-current nets"
 
 # Minimum trace width for power traces (mm)
@@ -100,7 +100,7 @@ violation_message = "TRACE TOO NARROW"
 # GROUND PLANE RULES - High-Speed Signal Return Path Verification
 # ======================================================================
 [ground_plane]
-enabled = false  # Disabled for focused creepage testing
+enabled = true  # Enable to test Priority 1-4 implementation
 description = "Verifies continuous ground plane underneath high-speed traces for proper return path and EMC compliance"
 
 # Net classes requiring ground plane verification (high-speed signals)
@@ -149,6 +149,17 @@ return_via_max_distance_mm = 3.0  # Max distance from signal via to ground via
 violation_message_no_return_via = "NO RETURN VIA"
 
 # ======================================================================
+# PRIORITY 4: MINIMUM GROUND PLANE COVERAGE (Future/Optional)
+# ======================================================================
+# Ensures adequate ground plane coverage as percentage of total board area
+# Typical minimums: 30% (low-speed), 60% (high-speed), 90% (RF)
+# Note: Disabled by default as it's more of a design guideline than hard rule
+
+check_minimum_coverage = true  # Enabled to check board coverage
+min_coverage_percent = 30.0     # Minimum required ground coverage (%)
+violation_message_insufficient_coverage = "INSUFFICIENT GND COVERAGE"
+
+# ======================================================================
 # GROUND PLANE CLEARANCE CHECK (around traces)
 # ======================================================================
 # Verifies ground plane surrounds high-speed trace ("moat" for EMC compliance)
@@ -161,10 +172,11 @@ check_both_sides = true
 violation_message_insufficient_clearance = "INSUFFICIENT GND AROUND TRACE"
 
 # ======================================================================
+# ======================================================================
 # GROUND PLANE COVERAGE (global check)
 # ======================================================================
-check_global_coverage = false
-min_coverage_percent = 30.0
+# Note: min_coverage_percent is defined in Priority 4 section above
+check_global_coverage = true
 max_gap_anywhere_mm = 5.0
 
 violation_message_global = "GND PLANE GAP"
@@ -185,7 +197,7 @@ preferred_ground_layers = ["GND", "Bottom", "Inner2"]  # Layer priority
 # DIFFERENTIAL PAIR RULES (Future Implementation)
 # ======================================================================
 [differential_pairs]
-enabled = false
+enabled = true
 description = "Verifies differential pair matching and spacing"
 
 # Maximum length mismatch between pairs (mm)
@@ -203,7 +215,7 @@ violation_message = "DIFF PAIR MISMATCH"
 # HIGH-SPEED SIGNAL RULES (Future Implementation)
 # ======================================================================
 [high_speed]
-enabled = false
+enabled = true
 description = "Verifies high-speed signal routing best practices"
 
 # Maximum stub length for high-speed signals (mm)
@@ -221,7 +233,7 @@ violation_message = "HIGH-SPEED VIOLATION"
 # EMI FILTERING RULES
 # ======================================================================
 [emi_filtering]
-enabled = false  # Disabled for focused creepage testing
+enabled = true
 description = "Verifies EMI filtering on interface connectors (USB, Ethernet, HDMI, CAN, RS485)"
 
 # Connector identification - components with this reference prefix
