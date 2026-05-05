@@ -695,3 +695,57 @@ def make_si_checker(board=None, config=None):
     # Wire a no-op log so methods that call self.log() don't crash
     checker.log = lambda msg, force=False: None
     return checker
+
+
+class MockPCBShape:
+    """Mock for pcbnew.PCB_SHAPE used in debug drawing."""
+    
+    def __init__(self, board):
+        self._board = board
+        self._shape = None
+        self._start = None
+        self._end = None
+        self._layer = None
+        self._width = None
+    
+    def SetShape(self, shape):
+        self._shape = shape
+    
+    def SetStart(self, pt):
+        self._start = pt
+    
+    def SetEnd(self, pt):
+        self._end = pt
+    
+    def SetLayer(self, layer):
+        self._layer = layer
+    
+    def SetWidth(self, width):
+        self._width = width
+
+
+class MockPCBText:
+    """Mock for pcbnew.PCB_TEXT used in debug drawing."""
+    
+    def __init__(self, board):
+        self._board = board
+        self._text = ""
+        self._position = None
+        self._layer = None
+        self._text_size = None
+        self._text_thickness = None
+    
+    def SetText(self, text):
+        self._text = text
+    
+    def SetPosition(self, pos):
+        self._position = pos
+    
+    def SetLayer(self, layer):
+        self._layer = layer
+    
+    def SetTextSize(self, size):
+        self._text_size = size
+    
+    def SetTextThickness(self, thickness):
+        self._text_thickness = thickness

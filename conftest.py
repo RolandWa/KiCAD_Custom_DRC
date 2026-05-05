@@ -54,6 +54,12 @@ def _install_pcbnew_mock():
         def SetEnd(self, *a):   pass
         def SetWidth(self, *a): pass
         def SetLayer(self, *a): pass
+    class PCB_TEXT(_Stub):
+        def SetText(self, *a): pass
+        def SetPosition(self, *a): pass
+        def SetLayer(self, *a): pass
+        def SetTextSize(self, *a): pass
+        def SetTextThickness(self, *a): pass
     class VECTOR2I:
         def __init__(self, x=0, y=0): self.x = x; self.y = y
     
@@ -155,6 +161,7 @@ def _install_pcbnew_mock():
     mod.PCB_VIA    = PCB_VIA
     mod.PCB_GROUP  = PCB_GROUP
     mod.PCB_SHAPE  = PCB_SHAPE
+    mod.PCB_TEXT   = PCB_TEXT
     mod.VECTOR2I   = VECTOR2I
     mod.SHAPE_POLY_SET = SHAPE_POLY_SET
     mod.SHAPE_T_SEGMENT = 0
