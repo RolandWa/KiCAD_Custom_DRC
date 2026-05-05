@@ -303,6 +303,22 @@ class MockZone:
                 return True
         
         return False
+    
+    def IsOnLayer(self, layer: int) -> bool:
+        """Check if zone is on specified layer."""
+        return self._layer == layer
+    
+    def Outline(self):
+        """Return zone outline as SHAPE_POLY_SET."""
+        import pcbnew
+        poly = pcbnew.SHAPE_POLY_SET()
+        # Add bounding box as outline
+        poly.NewOutline()
+        poly.Append(self._bbox.GetLeft(), self._bbox.GetTop())
+        poly.Append(self._bbox.GetRight(), self._bbox.GetTop())
+        poly.Append(self._bbox.GetRight(), self._bbox.GetBottom())
+        poly.Append(self._bbox.GetLeft(), self._bbox.GetBottom())
+        return poly
 
 
 class MockTrack:
@@ -362,6 +378,38 @@ class MockTrack:
     
     def GetWidth(self) -> int:
         return self._width
+    
+    def TransformShapeToPolygon(self, poly_set, layer, clearance, error_loc, *args):
+        """Transform track to polygon (simplified as rectangle).
+        
+        Args:
+            poly_set: SHAPE_POLY_SET to append to
+            layer: Layer ID
+            clearance: Clearance value (internal units)
+            error_loc: Error location (ERROR_INSIDE/ERROR_OUTSIDE)
+            *args: Additional optional bool parameters (ignored)
+        """
+        # Create rectangle around track centerline
+        import pcbnew
+        half_width = self._width // 2
+        
+        # Calculate perpendicular vector for track width
+        dx = self._end.x - self._start.x
+        dy = self._end.y - self._start.y
+        length = (dx**2 + dy**2) ** 0.5
+        if length == 0:
+            return  # Zero-length track
+        
+        # Perpendicular unit vector
+        px = -dy / length * half_width
+        py = dx / length * half_width
+        
+        # Four corners of track rectangle
+        poly_set.NewOutline()
+        poly_set.Append(int(self._start.x + px), int(self._start.y + py))
+        poly_set.Append(int(self._end.x + px), int(self._end.y + py))
+        poly_set.Append(int(self._end.x - px), int(self._end.y - py))
+        poly_set.Append(int(self._start.x - px), int(self._start.y - py))
 
 
 class MockVia:
@@ -490,8 +538,16 @@ class MockPad:
         ps._pad_ref = self  # Store reference for distance calculations
         return ps
     
-    def TransformShapeToPolygon(self, poly_set, layer, clearance, max_error, error_loc):
-        """Transform pad shape to polygon (called by clearance checker)."""
+    def TransformShapeToPolygon(self, poly_set, layer, clearance, error_loc, *args):
+        """Transform pad shape to polygon (called by clearance checker).
+        
+        Args:
+            poly_set: SHAPE_POLY_SET to append to
+            layer: Layer ID
+            clearance: Clearance value (internal units)
+            error_loc: Error location (ERROR_INSIDE/ERROR_OUTSIDE)
+            *args: Additional optional bool parameters (ignored)
+        """
         # Add bounding box rectangle to the polygon set
         bbox = self.GetBoundingBox()
         poly_set.NewOutline()
@@ -502,6 +558,79 @@ class MockPad:
         poly_set._pad_ref = self  # Store reference for distance calculations
 
 
+class MockDrawing:
+    """
+    Minimal pcbnew.PCB_SHAPE stub for board-level graphics (lines, arcs, polygons).
+    
+    Args:
+        layer: Layer ID (e.g., 44=Edge.Cuts)
+        shape_type: Shape type string (e.g., "PCB_SHAPE", "PCB_ARC")
+        start: VECTOR2I start position
+        end: VECTOR2I end position
+        width: Line width in internal units
+    """
+    
+    def __init__(self, layer: int, shape_type: str = "PCB_SHAPE", 
+                 start=None, end=None, width: int = None):
+        self._layer = layer
+        self._shape_type = shape_type
+        import pcbnew
+        self._start = start or pcbnew.VECTOR2I(0, 0)
+        self._end = end or pcbnew.VECTOR2I(0, 0)
+        self._width = width or pcbnew.FromMM(0.1)
+    
+    def GetLayer(self) -> int:
+        return self._layer
+    
+    def GetClass(self) -> str:
+        return self._shape_type
+    
+    def GetBoundingBox(self):
+        """Return bounding box of drawing."""
+        min_x = min(self._start.x, self._end.x)
+        max_x = max(self._start.x, self._end.x)
+        min_y = min(self._start.y, self._end.y)
+        max_y = max(self._start.y, self._end.y)
+        return MockBoundingBox(min_x, min_y, max_x, max_y)
+    
+    def TransformShapeToPolygon(self, poly_set, layer, clearance, max_error, error_loc):
+        """Transform drawing shape to polygon.
+        
+        Args:
+            poly_set: SHAPE_POLY_SET to append to
+            layer: Layer ID
+            clearance: Clearance value (internal units)
+            max_error: Maximum error tolerance (internal units)
+            error_loc: Error location (ERROR_INSIDE/ERROR_OUTSIDE)
+        """
+        # Create rectangle around line
+        half_width = (self._width + clearance) // 2
+        
+        # Calculate perpendicular vector
+        dx = self._end.x - self._start.x
+        dy = self._end.y - self._start.y
+        length = (dx**2 + dy**2) ** 0.5
+        if length == 0:
+            # Zero-length line - create small square
+            poly_set.NewOutline()
+            poly_set.Append(self._start.x - half_width, self._start.y - half_width)
+            poly_set.Append(self._start.x + half_width, self._start.y - half_width)
+            poly_set.Append(self._start.x + half_width, self._start.y + half_width)
+            poly_set.Append(self._start.x - half_width, self._start.y + half_width)
+            return
+        
+        # Perpendicular unit vector
+        px = -dy / length * half_width
+        py = dx / length * half_width
+        
+        # Four corners of rectangle
+        poly_set.NewOutline()
+        poly_set.Append(int(self._start.x + px), int(self._start.y + py))
+        poly_set.Append(int(self._end.x + px), int(self._end.y + py))
+        poly_set.Append(int(self._end.x - px), int(self._end.y - py))
+        poly_set.Append(int(self._start.x - px), int(self._start.y - py))
+
+
 class MockFootprint:
     """
     Minimal pcbnew.FOOTPRINT stub.
@@ -510,11 +639,14 @@ class MockFootprint:
         reference: Reference designator (e.g., "U1", "C1")
         pads: List of MockPad objects
         position: VECTOR2I position
+        graphical_items: List of MockDrawing objects
     """
     
-    def __init__(self, reference: str, pads: list = None, position=None):
+    def __init__(self, reference: str, pads: list = None, position=None, 
+                 graphical_items: list = None):
         self._reference = reference
         self._pads = pads or []
+        self._graphical_items = graphical_items or []
         import pcbnew
         self._position = position or pcbnew.VECTOR2I(0, 0)
     
@@ -525,8 +657,8 @@ class MockFootprint:
         return self._pads
     
     def GraphicalItems(self):
-        """Return graphical items on the footprint (empty list for testing)."""
-        return []
+        """Return graphical items on the footprint."""
+        return self._graphical_items
     
     def GetPosition(self):
         return self._position

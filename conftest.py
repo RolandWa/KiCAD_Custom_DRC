@@ -92,6 +92,48 @@ def _install_pcbnew_mock():
         def Collide(self, other_point):
             """Mock collision - returns false."""
             return False
+        
+        def BBox(self):
+            """Return bounding box of all polygon outlines."""
+            # Get all points from all outlines
+            all_points = []
+            for outline in self._outlines:
+                all_points.extend(outline)
+            if self._current_outline:
+                all_points.extend(self._current_outline)
+            
+            if not all_points:
+                # Empty polygon, return zero-size box
+                class _MockBox:
+                    def GetLeft(self): return 0
+                    def GetTop(self): return 0
+                    def GetRight(self): return 0
+                    def GetBottom(self): return 0
+                    def GetWidth(self): return 0
+                    def GetHeight(self): return 0
+                return _MockBox()
+            
+            # Find min/max coordinates
+            xs = [p[0] for p in all_points]
+            ys = [p[1] for p in all_points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            
+            # Return mock bounding box
+            class _MockBox:
+                def __init__(self, x1, y1, x2, y2):
+                    self.x1 = x1
+                    self.y1 = y1
+                    self.x2 = x2
+                    self.y2 = y2
+                def GetLeft(self): return self.x1
+                def GetTop(self): return self.y1
+                def GetRight(self): return self.x2
+                def GetBottom(self): return self.y2
+                def GetWidth(self): return abs(self.x2 - self.x1)
+                def GetHeight(self): return abs(self.y2 - self.y1)
+            
+            return _MockBox(min_x, min_y, max_x, max_y)
     
     class _MockOutline:
         """Mock polygon outline for SHAPE_POLY_SET."""
