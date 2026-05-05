@@ -191,6 +191,11 @@ class MockBoard:
     def GetBoardEdgesBoundingBox(self):
         """Return bounding box of board edges."""
         return self._board_bbox
+    
+    def Add(self, item):
+        """Add item to board (used for debug drawing)."""
+        # No-op in mock - just accept the item
+        pass
 
 
 class MockBoundingBox:
