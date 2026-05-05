@@ -99,6 +99,10 @@ class MockNetInfo:
 
     def NetsByName(self):
         return self._by_name
+    
+    def values(self):
+        """Allow iteration over all nets (for clearance/creepage domain scanning)."""
+        return self._nets
 
 
 class MockBoard:
@@ -123,6 +127,7 @@ class MockBoard:
         footprints: list = None,
         copper_layer_count: int = 4,
         board_bbox = None,
+        drawings: list = None,
     ):
         self._file = board_file
         self._nets = nets or []
@@ -131,6 +136,7 @@ class MockBoard:
         self._zones = zones or []
         self._footprints = footprints or []
         self._copper_layer_count = copper_layer_count
+        self._drawings = drawings or []
         # Default board bounding box: 100mm x 100mm
         import pcbnew
         self._board_bbox = board_bbox or MockBoundingBox(
@@ -171,6 +177,17 @@ class MockBoard:
     def GetFootprints(self):
         return self._footprints
     
+    def GetPads(self):
+        """Return all pads from all footprints."""
+        pads = []
+        for fp in self._footprints:
+            pads.extend(fp.Pads())
+        return pads
+    
+    def GetDrawings(self):
+        """Return graphical drawings (lines, arcs, polygons, etc.)."""
+        return self._drawings
+    
     def GetBoardEdgesBoundingBox(self):
         """Return bounding box of board edges."""
         return self._board_bbox
@@ -196,6 +213,18 @@ class MockBoundingBox:
     
     def GetTop(self):
         return min(self.y1, self.y2)
+    
+    def GetRight(self):
+        return max(self.x1, self.x2)
+    
+    def GetBottom(self):
+        return max(self.y1, self.y2)
+    
+    def GetX(self):
+        return self.GetLeft()
+    
+    def GetY(self):
+        return self.GetTop()
 
 
 class MockZone:
@@ -397,12 +426,16 @@ class MockPad:
         net_name: Net name (e.g., "GND", "VCC")
         position: VECTOR2I position
         number: Pad number (e.g., "1", "2")
+        size_mm: Pad size in mm (for bounding box), default 1.0mm
     """
     
-    def __init__(self, net_name: str, position, number: str = "1"):
+    def __init__(self, net_name: str, position, number: str = "1", size_mm: float = 1.0):
         self._net_name = net_name
         self._position = position
         self._number = number
+        self._size_mm = size_mm
+        self._net = MockNet(net_name)  # Create MockNet for GetNet()
+        self._layer = 0  # Default to F.Cu (layer 0)
     
     def GetNetname(self) -> str:
         return self._net_name
@@ -412,6 +445,61 @@ class MockPad:
     
     def GetNumber(self) -> str:
         return self._number
+    
+    def GetNet(self):
+        """Return MockNet for this pad (needed for clearance/creepage checks)."""
+        return self._net
+    
+    def GetBoundingBox(self):
+        """Return bounding box for obstacle geometry (clearance/creepage pathfinding)."""
+        import pcbnew
+        half_size = pcbnew.FromMM(self._size_mm / 2.0)
+        return MockBoundingBox(
+            self._position.x - half_size,  # x1 (left)
+            self._position.y - half_size,  # y1 (top)
+            self._position.x + half_size,  # x2 (right)
+            self._position.y + half_size   # y2 (bottom)
+        )
+    
+    def GetSize(self):
+        """Return pad size as VECTOR2I (width, height) in internal units."""
+        import pcbnew
+        size_internal = pcbnew.FromMM(self._size_mm)
+        return pcbnew.VECTOR2I(size_internal, size_internal)
+    
+    def GetLayer(self):
+        """Return layer (0 = F.Cu)."""
+        return self._layer
+    
+    def IsOnLayer(self, layer):
+        """Check if pad is on specified layer."""
+        return self._layer == layer
+    
+    def GetShapePolygonSet(self, layer):
+        """Return polygon shape for clearance calculation (simplified to bounding box)."""
+        # For simplicity, return empty polygon set - clearance check will use bounding box
+        import pcbnew
+        ps = pcbnew.SHAPE_POLY_SET()
+        # Add bounding box as simple rectangle
+        bbox = self.GetBoundingBox()
+        ps.NewOutline()
+        ps.Append(bbox.GetLeft(), bbox.GetTop())
+        ps.Append(bbox.GetRight(), bbox.GetTop())
+        ps.Append(bbox.GetRight(), bbox.GetBottom())
+        ps.Append(bbox.GetLeft(), bbox.GetBottom())
+        ps._pad_ref = self  # Store reference for distance calculations
+        return ps
+    
+    def TransformShapeToPolygon(self, poly_set, layer, clearance, max_error, error_loc):
+        """Transform pad shape to polygon (called by clearance checker)."""
+        # Add bounding box rectangle to the polygon set
+        bbox = self.GetBoundingBox()
+        poly_set.NewOutline()
+        poly_set.Append(bbox.GetLeft(), bbox.GetTop())
+        poly_set.Append(bbox.GetRight(), bbox.GetTop())
+        poly_set.Append(bbox.GetRight(), bbox.GetBottom())
+        poly_set.Append(bbox.GetLeft(), bbox.GetBottom())
+        poly_set._pad_ref = self  # Store reference for distance calculations
 
 
 class MockFootprint:
@@ -435,6 +523,10 @@ class MockFootprint:
     
     def Pads(self):
         return self._pads
+    
+    def GraphicalItems(self):
+        """Return graphical items on the footprint (empty list for testing)."""
+        return []
     
     def GetPosition(self):
         return self._position
