@@ -63,7 +63,7 @@ PHASE 2 — DONE (Spatial Analysis & Pattern Matching)
    - NOTE: _build_net_class_map lookahead regex fixed 2026-04-05
 
 ────────────────────────────────────────────────────────────────────────────
-PHASE 3 — IN PROGRESS (Complex Geometry & Graph Algorithms)
+PHASE 3 — PARTIALLY COMPLETE (3/4 checks implemented — 75%)
 ────────────────────────────────────────────────────────────────────────────
 ✅ CHECK 6: Net Stub Check                                   [code ✓] [test 🔬]
   Difficulty: ★★★★☆  — estimated 10-12 h
@@ -88,16 +88,20 @@ PHASE 3 — IN PROGRESS (Complex Geometry & Graph Algorithms)
   - 4W rule enforcement on external traces
   - Configuration section added to emc_rules.toml
 
-✅ CHECK 11: Net Coupling / Crosstalk                        [code ✓] [test 🔬]
+❌ CHECK 11: Net Coupling / Crosstalk                        [code ❌] [test 🔬]
   Difficulty: ★★★★☆  — estimated 10-12 h
   - Build spatial grid index over all track segments
   - Detect parallel segments within coupling_distance_mm
   - Compute overlap length and separation
   - Flag when (overlap / separation) > coupling_ratio_threshold
-  IMPLEMENTED: 2026-05-11
-  - _find_parallel_segments() helper with angle/distance filtering
-  - _check_net_coupling() with spatial search and coefficient calc
-  - Configuration section added to emc_rules.toml
+  STATUS: STUB — lines 2027-2034 contain only TODO comments:
+    # TODO: Build spatial index for efficient parallel segment search
+    # TODO: Implement parallel segment detection with angular tolerance
+    # TODO: Calculate coupling coefficient for each parallel pair
+    # TODO: Create violations with aggressor/victim information
+    # TODO: Draw arrows showing coupled segments and spacing
+  NOTE: Helper _find_parallel_segments() is implemented but unused
+  NOTE: Configuration section exists in emc_rules.toml
 
 ✅ CHECK 13: Differential Running Skew                       [code ✓] [test 🔬]
   Difficulty: ★★★★☆  — estimated 8-10 h
@@ -108,10 +112,6 @@ PHASE 3 — IN PROGRESS (Complex Geometry & Graph Algorithms)
   - _calculate_spacing_along_pair() with perpendicular distance sampling
   - Statistical analysis (mean, std dev, variation %)
   - Configuration section added to emc_rules.toml
-
-────────────────────────────────────────────────────────────────────────────
-PHASE 3 — COMPLETE ✅ (4/4 checks implemented)
-────────────────────────────────────────────────────────────────────────────
 
 ────────────────────────────────────────────────────────────────────────────
 PHASE 4 — COMPLETE ✅ (2/2 checks implemented)
@@ -140,31 +140,17 @@ PHASE 4 — COMPLETE ✅ (2/2 checks implemented)
   - Configuration section added to emc_rules.toml
 
 ────────────────────────────────────────────────────────────────────────────
-SIGNAL INTEGRITY MODULE — 100% COMPLETE ✅ (17/17 checks implemented)
+SIGNAL INTEGRITY MODULE — 94% COMPLETE (16/17 checks implemented)
 ────────────────────────────────────────────────────────────────────────────
-
-□ Impedance Calculation Refinement                           [code □] [test □]
-  - Prerequisite: _get_reference_planes(layer_id) helper
-
-□ CHECK 3: Reference Plane Changing (along trace path)       [code □] [test □]
-  Difficulty: ★★★★★  — estimated 12-15 h
-  - Walk each trace segment; at each sample point find the zone(s) on the
-    adjacent reference layer; record the zone net
-  - Flag when the zone net changes along a single continuous trace
-  - Also flag crossing a gap (no zone coverage) in the reference plane
-  - Prerequisite: multi-point zone lookup infrastructure from CHECK 7
-
-□ CHECK 13: Differential Running Skew                        [code □] [test □]
-  Difficulty: ★★★★★  — estimated 15-18 h
-  - Requires connectivity graph from both P and N nets
-  - Traverse both paths simultaneously from source pad
-  - Accumulate running length delta at each topological step
-  - Flag any point where |delta| > max_running_skew_mm
-  - Must handle serpentine tuning sections (do NOT penalise them)
+REMAINING: Net coupling/crosstalk check (10-12h implementation effort)
 
 ────────────────────────────────────────────────────────────────────────────
 PHASE 5 — Backlog (Future Enhancements)
 ────────────────────────────────────────────────────────────────────────────
+□ Impedance Calculation Refinement                           [code ⚠️] [test □]
+  - Implement Wen (1969) elliptic integral formula for CPW traces
+  - Current: approximation formula (sufficient for most cases)
+  - Estimated effort: 4-6 h
 □ Via Anti-Pad Violations
   - Check via clearance holes in plane layers
   - Verify anti-pad diameter ≥ drill + 2×min_annular_ring
@@ -191,8 +177,15 @@ TEST INFRASTRUCTURE TODO (tests/signal_integrity/test_checks.py)
   Coverage targets once test_checks.py is fully implemented:
     signal_integrity.py  → ~65%  (up from 24%)
 
-Total Remaining Implementation: 35-45 h (Phase 3) + 39-48 h (Phase 4)
+────────────────────────────────────────────────────────────────────────────
+IMPLEMENTATION SUMMARY
+────────────────────────────────────────────────────────────────────────────
+Total Implemented: 16/17 checks (94%)
+Remaining Implementation: 10-12 h (net coupling check)
+Helper Functions: All implemented (6/6)
+Impedance Refinement: 4-6 h (optional enhancement)
 ================================================================================
+Last Updated: 2026-05-15
 """
 
 import pcbnew

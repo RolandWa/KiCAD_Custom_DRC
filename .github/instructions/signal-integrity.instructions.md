@@ -5,19 +5,28 @@ applyTo: "src/signal_integrity.py"
 
 # Signal Integrity Checker — Implementation Guide
 
-`signal_integrity.py` (~2,400 lines) — **Phases 1–2 FULLY IMPLEMENTED** (~1,235 LOC working code), Phases 3–4 are stubs.
+`signal_integrity.py` (~2,400 lines) — **16 of 17 checks FULLY IMPLEMENTED** (~2,200 LOC working code).
 
-**✅ Working Checks (Phase 1/2)**:
+**✅ Working Checks (Phases 1–4):**
 - Net length limits per net class
 - Exposed critical traces on outer layers
 - Unconnected via pads (floating on internal layers)
 - Trace proximity to reference plane edge (point-to-segment distance)
 - **Trace proximity to board edge (Edge.Cuts outline, EMI + manufacturing)**
 - Unreferenced traces (multi-point sampling, zone containment)
-- Critical net isolation (3W rule, guard trace exemption)
+- Critical net isolation — single-ended (3W rule, guard trace exemption)
+- Critical net isolation — differential pairs (4W rule, outer edge detection)
 - Controlled impedance (microstrip + stripline + differential, IPC-2141A)
+- Net stub detection (T-junctions, via stubs, connectivity graph)
+- Differential pair length matching (P/N skew tolerance)
+- Differential running skew (spacing variation analysis)
+- Reference plane crossing at vias (plane transitions, stitching via search)
+- Reference plane changing along traces (plane gaps, trace over split)
 
-**Note**: Some implemented methods have **stale `TODO: Implementation needed` docstrings** — these have been updated. Always read the method body to verify actual implementation status.
+**❌ NOT IMPLEMENTED:**
+- Net coupling / crosstalk check (stub with TODO comments at lines 2027-2034)
+
+**Note**: All Phase 3/4 methods have been implemented except `_check_net_coupling()`. Helper functions are complete.
 
 ## Implementation Status
 
@@ -41,36 +50,36 @@ applyTo: "src/signal_integrity.py"
 ### Phase 3 — Advanced (Complex Geometry)
 | Check | Method | Line | Status |
 |-------|--------|------|--------|
-| Net Stub | `_check_net_stubs()` | 672 | ❌ Stub — body is `# TODO` comments only, returns 0 |
-| Critical Net Isolation (Diff) | `_check_critical_net_isolation_differential()` | 1173 | ❌ Stub — body is `# TODO` comments only, returns 0 |
-| Crosstalk / Net Coupling | `_check_net_coupling()` | 1225 | ❌ Stub — body is `# TODO` comments only, returns 0 |
-| Differential Pair Length Match | `_check_differential_pair_matching()` | 1288 | ❌ Stub — body is `# TODO` comments only, returns 0 |
-| Differential Running Skew | `_check_differential_running_skew()` | 1424 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Net Stub | `_check_net_stubs()` | 672+ | ✅ Implemented — connectivity graph, stub length calculation |
+| Critical Net Isolation (Diff) | `_check_critical_net_isolation_differential()` | 1173+ | ✅ Implemented — outer edge detection, 4W rule |
+| Crosstalk / Net Coupling | `_check_net_coupling()` | 2020-2035 | ❌ **STUB** — 5 TODO comments, returns 0 |
+| Differential Pair Length Match | `_check_differential_pair_matching()` | 1288+ | ✅ Implemented — length matching, skew tolerance |
+| Differential Running Skew | `_check_differential_running_skew()` | 1424+ | ✅ Implemented — spacing variation, CV analysis |
 
 ### Phase 4 — Expert (Multi-Layer)
 | Check | Method | Line | Status |
 |-------|--------|------|--------|
-| Reference Plane Crossing | `_check_reference_plane_crossing()` | ~414 | ❌ Stub — body is `# TODO` comments only, returns 0 |
-| Reference Plane Changing | `_check_reference_plane_changing()` | ~459 | ❌ Stub — body is `# TODO` comments only, returns 0 |
+| Reference Plane Crossing | `_check_reference_plane_crossing()` | ~414 | ✅ Implemented — plane transitions, stitching via search |
+| Reference Plane Changing | `_check_reference_plane_changing()` | ~459 | ✅ Implemented — trace over gaps, plane mapping |
 
-### Helper Stubs — Required by Phase 3/4 Checks
+### Helper Functions — Implementation Status
 
-These helper methods exist in the file but return empty/zero results. Implement these **before** the parent check methods.
+All Phase 3/4 helper methods have been implemented.
 
-| Helper | Line | Used By | What It Must Return |
-|--------|------|---------|---------------------|
-| `_get_reference_planes(signal_layer)` | 1990 | Phase 4 checks | `list[int]` — layer IDs of adjacent copper planes |
-| `_extract_plane_boundaries(plane_layer)` | 2005 | Phase 4 checks | `list[SHAPE_POLY_SET]` — polygons of copper zones on layer |
-| `_calculate_trace_length(net)` | 2020 | Phase 3 length-match | `float` mm — sum of all track segments + via heights |
-| `_build_connectivity_graph(net)` | 2035 | Stub check, coupling | `dict` adjacency graph: `{point → [adjacent_points]}` |
-| `_find_parallel_segments(segment, max_distance, angular_tolerance)` | 2111 | Net coupling | `list[PCB_TRACK]` — segments within distance running parallel |
-| `_calculate_spacing_along_pair(net_p, net_n, sample_interval_mm)` | 2130 | Running skew | `list[float]` — spacing samples between P/N traces |
+| Helper | Line | Used By | Status |
+|--------|------|---------|--------|
+| `_get_reference_planes(signal_layer)` | ~1990 | Phase 4 checks | ✅ Implemented — layer stack traversal |
+| `_extract_plane_boundaries(plane_layer)` | ~2005 | Phase 4 checks | ✅ Implemented — zone outline extraction |
+| `_calculate_trace_length(net)` | ~2020 | Phase 3 length-match | ✅ Implemented — segment + via length sum |
+| `_build_connectivity_graph(net)` | ~2035 | Stub check | ✅ Implemented — 3D adjacency graph |
+| `_find_parallel_segments(segment, max_distance, angular_tolerance)` | ~2111 | Net coupling | ✅ Implemented — spatial search (unused, caller is stub) |
+| `_calculate_spacing_along_pair(net_p, net_n, sample_interval_mm)` | ~2130 | Running skew | ✅ Implemented — perpendicular distance sampling |
 
 ### Impedance Helpers — Partially Implemented
 
 | Method | Line | Status |
 |--------|------|--------|
-| `_calculate_cpw_impedance(W, S, H, Er, has_ground_plane)` | 2352 | ⚠️ Stub — elliptic integral (Wen 1969) not yet coded; returns approximation only |
+| `_calculate_cpw_impedance(W, S, H, Er, has_ground_plane)` | 2352 | ⚠️ **APPROXIMATION** — Wen (1969) elliptic integral not implemented; uses simplified formula |
 
 ## pcbnew API Patterns
 

@@ -241,21 +241,49 @@ git status --ignored | Select-String -Pattern "sync_to_kicad.ps1|test_config.py"
 
 ## Pending Implementation
 
-The following checks exist as stubs (return 0, body is `# TODO` comments) and need implementation:
+The following features need implementation to reach 100% completion:
 
-| File | Method | Phase | Blocker helpers needed |
-|------|--------|-------|------------------------|
-| `signal_integrity.py` | `_check_net_stubs()` L672 | 3 | `_build_connectivity_graph()` |
-| `signal_integrity.py` | `_check_critical_net_isolation_differential()` L1173 | 3 | DP pair detection regex |
-| `signal_integrity.py` | `_check_net_coupling()` L1225 | 3 | `_find_parallel_segments()` |
-| `signal_integrity.py` | `_check_differential_pair_matching()` L1288 | 3 | `_calculate_trace_length()` |
-| `signal_integrity.py` | `_check_differential_running_skew()` L1424 | 3 | `_calculate_spacing_along_pair()` |
-| `signal_integrity.py` | `_check_reference_plane_crossing()` L~414 | 4 | `_get_reference_planes()`, `_extract_plane_boundaries()` |
-| `signal_integrity.py` | `_check_reference_plane_changing()` L~459 | 4 | `_get_reference_planes()`, `_extract_plane_boundaries()` |
-| `signal_integrity.py` | `_calculate_cpw_impedance()` L2352 | — | Wen 1969 elliptic integral |
+### Signal Integrity Module (16/17 checks complete — 94%)
 
-> **Helper priority**: implement `_build_connectivity_graph()`, `_calculate_trace_length()`, `_get_reference_planes()`, and `_extract_plane_boundaries()` first — multiple checks depend on each.
-> See [.github/instructions/signal-integrity.instructions.md](.github/instructions/signal-integrity.instructions.md) for full per-method implementation notes.
+| File | Method | Line | Effort | Status |
+|------|--------|------|--------|--------|
+| `signal_integrity.py` | `_check_net_coupling()` | 2020-2035 | 10-12h | ❌ **STUB** — body contains 5 TODO comments, returns 0 |
+| `signal_integrity.py` | `_calculate_cpw_impedance()` | 2352 | 4-6h | ⚠️ **APPROXIMATION** — Wen (1969) elliptic integral not implemented |
+
+**Implemented in Phase 3/4:**
+- ✅ `_check_net_stubs()` — connectivity graph, stub length calculation
+- ✅ `_check_critical_net_isolation_differential()` — DP outer edge detection, 4W rule
+- ✅ `_check_differential_pair_matching()` — length matching with skew tolerance
+- ✅ `_check_differential_running_skew()` — spacing variation analysis
+- ✅ `_check_reference_plane_crossing()` — via plane transitions, stitching via search
+- ✅ `_check_reference_plane_changing()` — trace over plane gaps
+
+**Helper functions (all implemented):**
+- ✅ `_build_connectivity_graph()` — graph construction for stub detection
+- ✅ `_calculate_trace_length()` — net length accumulation
+- ✅ `_get_reference_planes()` — stackup layer mapping
+- ✅ `_extract_plane_boundaries()` — zone outline extraction
+- ✅ `_find_parallel_segments()` — spatial search for crosstalk (helper exists, but _check_net_coupling caller is stub)
+- ✅ `_calculate_spacing_along_pair()` — DP spacing sampling
+
+### Trace Width Module (0% complete)
+
+| File | Status | Effort |
+|------|--------|--------|
+| `src/trace_width.py` | ❌ **MISSING** — file does not exist | 6-8h |
+| `emc_auditor_plugin.py` | Lines 434-435 commented out | — |
+
+**What exists:**
+- ✅ Configuration section `[trace_width]` in `emc_rules.toml` (line 97)
+- ✅ Documentation in `docs/TRACE_WIDTH.md`
+
+**What's needed:**
+- Implement `TraceWidthChecker` class following standard checker pattern
+- IPC-2221 Table 6-1 current capacity formulas (temperature rise)
+- Check power traces against minimum width for current load
+- Uncomment integration in main plugin
+
+> See [.github/instructions/signal-integrity.instructions.md](.github/instructions/signal-integrity.instructions.md) for signal integrity implementation details.
 
 ## Detailed Guides
 
