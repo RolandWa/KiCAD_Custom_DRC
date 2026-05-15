@@ -1216,6 +1216,26 @@ min_isolation_mm = 0.0
 ground_net_patterns = ["GND", "AGND", "DGND", "PGND", "CHASSIS", "PE"]
 
 # ======================================================================
+# CHECK 10: Critical Net Isolation (Differential Pairs)
+# ======================================================================
+[signal_integrity.critical_net_isolation_dp]
+enabled = true
+description = "Flag differential pairs lacking proper isolation on outer edges"
+
+# Net classes with differential pairs requiring isolation
+critical_net_classes = ["USB", "HDMI", "Ethernet", "LVDS", "HighSpeed", "DDR"]
+
+# Isolation multiplier for outer edges (typically 4× pair width for tight coupling)
+# Differential pairs have controlled inner spacing (impedance), need outer isolation
+outer_edge_multiplier = 4.0
+
+# Minimum isolation distance (mm) - fixed floor regardless of width
+min_isolation_mm = 0.0
+
+# Net name patterns recognized as ground (exempt from violation)
+ground_net_patterns = ["GND", "AGND", "DGND", "PGND", "CHASSIS", "PE"]
+
+# ======================================================================
 # CHECK 6: Differential Pair Length Matching
 # ======================================================================
 [signal_integrity.differential_pair_matching]
@@ -1226,3 +1246,122 @@ description = "Flag differential pairs whose P and N trace lengths differ beyond
 # Pairs whose net class is not listed use default_max_mismatch_mm
 max_length_mismatch_by_class = { USB = 0.5, HDMI = 0.3, DDR = 5.0, HighSpeed = 1.0 }
 default_max_mismatch_mm = 1.0
+
+# ======================================================================
+# CHECK 11: Net Coupling / Crosstalk
+# ======================================================================
+[signal_integrity.net_coupling]
+enabled = true
+description = "Flag excessive coupling between parallel trace segments (crosstalk detection)"
+
+# Net classes to check for coupling (both as aggressors and victims)
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "Analog", "50R"]
+
+# Maximum coupling coefficient: parallel_length_mm / spacing_mm
+# Typical threshold: 50 (e.g., 10mm parallel / 0.2mm spacing)
+max_coupling_coefficient = 50.0
+
+# Minimum parallel run length to trigger check (mm)
+# Short parallel runs (<2mm) typically negligible
+min_parallel_length_mm = 2.0
+
+# Angular tolerance for "parallel" detection (degrees)
+# Segments within ±10° are considered parallel
+angular_tolerance_deg = 10.0
+
+# Exclude intra-pair coupling for differential pairs
+exclude_differential_pairs = true
+
+# Net name patterns recognized as ground (exempt from victim role)
+ground_net_patterns = ["GND", "AGND", "DGND", "PGND"]
+
+# ======================================================================
+# CHECK 6: Net Stub Check
+# ======================================================================
+[signal_integrity.net_stubs]
+enabled = true
+description = "Flag unterminated trace branches (stubs) that cause signal reflections"
+
+# Net classes to check for stubs (high-speed signals most sensitive)
+critical_net_classes = ["HighSpeed", "Clock", "DDR", "USB", "HDMI", "PCIe", "50R"]
+
+# Maximum allowed stub length (mm)
+# Rule of thumb: stub < λ/10 at max frequency
+# For 1GHz: λ/10 ≈ 30mm, practical limit 1.5mm for signal integrity
+max_stub_length_mm = 1.5
+
+# Check via stubs (unused via tails extending beyond last connection)
+check_via_stubs = true
+
+# Check branch stubs (T-junction branches to unused pins)
+check_branch_stubs = true
+
+# Minimum stub length to report (mm) - ignore very short stubs
+min_stub_length_mm = 0.3
+
+# ======================================================================
+# CHECK 13: Differential Running Skew
+# ======================================================================
+[signal_integrity.differential_running_skew]
+enabled = true
+description = "Flag differential pairs with excessive spacing variation along route"
+
+# Net classes with differential pairs requiring consistent spacing
+critical_net_classes = ["USB", "HDMI", "PCIe", "Ethernet", "LVDS", "HighSpeed", "DDR"]
+
+# Maximum allowed spacing variation (% of mean spacing)
+# Example: mean=0.2mm, max_variation=15% → accept 0.17-0.23mm range
+max_spacing_variation_percent = 15.0
+
+# Sample interval for spacing measurements (mm)
+# Smaller intervals = more sensitive detection but slower
+sample_interval_mm = 1.0
+
+# Minimum pair length to check (mm)
+# Ignore very short pairs where spacing variation is less critical
+min_pair_length_mm = 5.0
+
+# ======================================================================
+# CHECK 2: Reference Plane Crossing (at vias)
+# ======================================================================
+[signal_integrity.reference_plane_crossing]
+enabled = true
+description = "Flag vias crossing between different reference planes without stitching"
+
+# Net classes requiring plane crossing checks
+critical_net_classes = ["HighSpeed", "Clock", "USB", "HDMI", "PCIe", "Ethernet", "DDR"]
+
+# Maximum distance to required stitching via (mm)
+# Stitching vias provide return path when signal crosses plane boundaries
+max_stitching_distance_mm = 1.0
+
+# Reference plane net patterns (GND/PWR zones)
+reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND", "+3V3", "+5V", "+12V"]
+
+# Exempt plane pairs (allowed transitions that don't require stitching)
+# Format: [["NET1", "NET2"], ["NET3", "NET4"]]
+# Example: [["GND", "AGND"]] allows GND↔AGND transitions
+exempt_plane_pairs = []
+
+# ======================================================================
+# CHECK 3: Reference Plane Changing (along trace path)
+# ======================================================================
+[signal_integrity.reference_plane_changing]
+enabled = true
+description = "Flag traces changing reference planes along horizontal path"
+
+# Net classes requiring continuous reference plane
+critical_net_classes = ["HighSpeed", "Clock", "USB", "HDMI", "PCIe", "Ethernet", "DDR"]
+
+# Minimum plane overlap before considering reference change (mm)
+# Prevents false positives from trace routing near plane edge
+min_plane_overlap_mm = 0.5
+
+# Require bypass capacitor at reference plane transitions
+require_bypass_cap = false
+
+# Maximum distance to required bypass cap (mm) - only if require_bypass_cap=true
+max_bypass_distance_mm = 2.0
+
+# Reference plane net patterns
+reference_plane_patterns = ["GND", "PWR", "VCC", "VDD", "POWER", "AGND", "DGND", "PGND", "+3V3", "+5V", "+12V"]

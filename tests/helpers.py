@@ -70,15 +70,27 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 class MockNet:
     """Minimal pcbnew.NETINFO_ITEM stub."""
 
-    def __init__(self, name: str, net_class: str = "Default"):
+    # Class variable to auto-assign net codes
+    _next_net_code = 1
+
+    def __init__(self, name: str, net_class: str = "Default", net_code: int = None):
         self._name = name
         self._class = net_class
+        # Auto-assign net code if not provided
+        if net_code is None:
+            self._code = MockNet._next_net_code
+            MockNet._next_net_code += 1
+        else:
+            self._code = net_code
 
     def GetNetname(self) -> str:
         return self._name
 
     def GetNetClassName(self) -> str:
         return self._class
+    
+    def GetNetCode(self) -> int:
+        return self._code
 
 
 class MockNetInfo:
@@ -143,12 +155,29 @@ class MockBoard:
             pcbnew.FromMM(0), pcbnew.FromMM(0), 
             pcbnew.FromMM(100), pcbnew.FromMM(100)
         )
+        
+        # Wire up net objects to tracks for GetNetCode() support
+        net_map = {net.GetNetname(): net for net in self._nets}
+        for track in self._tracks:
+            if hasattr(track, 'GetNetname') and track.GetNetname() in net_map and not track._net_obj:
+                track._net_obj = net_map[track.GetNetname()]
+        # Wire up net objects to zones
+        for zone in self._zones:
+            if zone.GetNetname() in net_map and not zone._net_obj:
+                zone._net_obj = net_map[zone.GetNetname()]
 
     def GetFileName(self) -> str:
         return self._file
 
     def GetNetInfo(self) -> MockNetInfo:
         return MockNetInfo(self._nets)
+    
+    def FindNet(self, net_name: str):
+        """Find net by name."""
+        for net in self._nets:
+            if net.GetNetname() == net_name:
+                return net
+        return None
 
     def GetLayerName(self, layer_id: int) -> str:
         return self._layer_names.get(layer_id, f"In{layer_id}.Cu")
@@ -251,6 +280,7 @@ class MockZone:
         self._filled = filled
         self._coverage_rects = coverage_rects or []
         self._bbox = bbox
+        self._net_obj = None  # Will be wired by MockBoard
         
         # Auto-calculate bounding box if not provided
         if self._bbox is None and self._coverage_rects:
@@ -264,6 +294,10 @@ class MockZone:
     
     def GetNetname(self) -> str:
         return self._net_name
+    
+    def GetNet(self):
+        """Return associated net object."""
+        return self._net_obj
     
     def GetLayer(self) -> int:
         return self._layer
@@ -343,12 +377,13 @@ class MockTrack:
     """
     
     def __init__(self, net_name: str, start, end, layer: int = 0,
-                 net_class: str = "Default", width: int = None):
+                 net_class: str = "Default", width: int = None, net_obj=None):
         self._net_name = net_name
         self._start = start
         self._end = end
         self._layer = layer
         self._net_class = net_class
+        self._net_obj = net_obj  # Store reference to MockNet for GetNetCode()
         # Import pcbnew here, not at module level
         import pcbnew
         self._width = width or pcbnew.FromMM(0.2)  # Default 0.2mm
@@ -365,6 +400,17 @@ class MockTrack:
     def GetNetClassName(self) -> str:
         return self._net_class
     
+    def GetNetCode(self) -> int:
+        """Return net code (from associated net object if available)."""
+        if self._net_obj:
+            return self._net_obj.GetNetCode()
+        # If no net object, derive from net name hash (for backwards compat)
+        return hash(self._net_name) % 10000
+    
+    def GetNet(self):
+        """Return associated net object."""
+        return self._net_obj
+    
     def GetStart(self):
         return self._start
     
@@ -378,11 +424,21 @@ class MockTrack:
         center_y = (self._start.y + self._end.y) // 2
         return pcbnew.VECTOR2I(center_x, center_y)
     
+    def GetCenter(self):
+        """Alias for GetPosition() - return track center."""
+        return self.GetPosition()
+    
     def GetLayer(self) -> int:
         return self._layer
     
     def GetWidth(self) -> int:
         return self._width
+    
+    def GetLength(self) -> int:
+        """Calculate track length (Euclidean distance from start to end)."""
+        dx = self._end.x - self._start.x
+        dy = self._end.y - self._start.y
+        return int((dx*dx + dy*dy) ** 0.5)
     
     def TransformShapeToPolygon(self, poly_set, layer, clearance, error_loc, *args):
         """Transform track to polygon (simplified as rectangle).
@@ -436,6 +492,7 @@ class MockVia:
         self._position = position
         self._net_class = net_class
         self._layer = 0  # Vias span all layers, but we can return F.Cu as default
+        self._net_obj = None  # Will be wired by MockBoard
         # Import pcbnew here after conftest has mocked it
         import pcbnew
         self._drill = pcbnew.FromMM(drill_diameter)
@@ -451,6 +508,16 @@ class MockVia:
     
     def GetNetClassName(self) -> str:
         return self._net_class
+    
+    def GetNet(self):
+        """Return associated net object."""
+        return self._net_obj
+    
+    def GetNetCode(self) -> int:
+        """Return net code (from associated net object if available)."""
+        if self._net_obj:
+            return self._net_obj.GetNetCode()
+        return hash(self._net_name) % 10000
     
     def GetPosition(self):
         return self._position
@@ -476,18 +543,27 @@ class MockPad:
     Minimal pcbnew.PAD stub.
     
     Args:
-        net_name: Net name (e.g., "GND", "VCC")
+        net_name: Net name (e.g., "GND", "VCC") or MockNet object
         position: VECTOR2I position
         number: Pad number (e.g., "1", "2")
         size_mm: Pad size in mm (for bounding box), default 1.0mm
     """
     
-    def __init__(self, net_name: str, position, number: str = "1", size_mm: float = 1.0):
-        self._net_name = net_name
+    def __init__(self, net_name, position, number: str = "1", size_mm: float = 1.0):
+        # Handle both string and MockNet inputs
+        if isinstance(net_name, str):
+            self._net_name = net_name
+            self._net = MockNet(net_name)  # Create MockNet for GetNet()
+            self._net_obj = self._net  # Alias for compatibility with other mocks
+        else:
+            # net_name is actually a MockNet object
+            self._net = net_name
+            self._net_obj = net_name
+            self._net_name = net_name.GetNetname()
+        
         self._position = position
         self._number = number
         self._size_mm = size_mm
-        self._net = MockNet(net_name)  # Create MockNet for GetNet()
         self._layer = 0  # Default to F.Cu (layer 0)
     
     def GetNetname(self) -> str:
@@ -498,6 +574,12 @@ class MockPad:
     
     def GetNumber(self) -> str:
         return self._number
+    
+    def GetNetCode(self) -> int:
+        """Return net code (from associated net object if available)."""
+        if self._net_obj:
+            return self._net_obj.GetNetCode()
+        return hash(self._net_name) % 10000
     
     def GetNet(self):
         """Return MockNet for this pad (needed for clearance/creepage checks)."""
@@ -523,6 +605,15 @@ class MockPad:
     def GetLayer(self):
         """Return layer (0 = F.Cu)."""
         return self._layer
+    
+    def GetDrillSize(self):
+        """Return drill size as VECTOR2I (for SMD vs THT detection).
+        
+        Returns VECTOR2I(0, 0) for SMD pads (no drill hole).
+        """
+        import pcbnew
+        return pcbnew.VECTOR2I(0, 0)  # Default: SMD pad (no drill)
+
     
     def IsOnLayer(self, layer):
         """Check if pad is on specified layer."""
@@ -667,6 +758,21 @@ class MockFootprint:
     
     def GetPosition(self):
         return self._position
+    
+    def GetFPID(self):
+        """Return MockFPID for EMI filtering interface detection."""
+        return MockFPID(self._reference)
+
+
+class MockFPID:
+    """Mock for pcbnew.LIB_ID (footprint ID)."""
+    
+    def __init__(self, reference):
+        self._reference = reference
+    
+    def GetLibItemName(self):
+        """Return footprint library item name (simplified)."""
+        return self._reference
 
 
 def make_si_checker(board=None, config=None):
@@ -749,3 +855,526 @@ class MockPCBText:
     
     def SetTextThickness(self, thickness):
         self._text_thickness = thickness
+
+
+# ---------------------------------------------------------------------------
+# Integration test helper - wires up checker with utility functions
+# ---------------------------------------------------------------------------
+
+def make_si_checker_with_utilities(board=None, config=None):
+    """
+    Factory: create a SignalIntegrityChecker with utility functions wired up.
+    
+    This allows calling individual _check_*() methods directly in tests.
+    Tracks violations via a list that can be inspected after the check runs.
+    
+    Args:
+        board: MockBoard instance (default: empty board)
+        config: Configuration dict (default: {})
+        
+    Returns:
+        tuple: (checker, violations_list)
+            checker: SignalIntegrityChecker instance with utilities wired
+            violations_list: List that accumulates violation info for inspection
+    """
+    import pcbnew
+    
+    checker = make_si_checker(board, config)
+    violations = []
+    
+    # Wire up utility functions
+    def mock_draw_marker(board, pos, msg, layer, group):
+        """Track marker creation"""
+        violations.append({
+            'type': 'marker',
+            'position': (pos.x, pos.y),
+            'message': msg,
+            'layer': layer
+        })
+    
+    def mock_draw_arrow(board, start, end, label, layer, group):
+        """Track arrow creation"""
+        violations.append({
+            'type': 'arrow',
+            'start': (start.x, start.y),
+            'end': (end.x, end.y),
+            'label': label
+        })
+    
+    def mock_get_distance(pos1, pos2):
+        """Calculate Euclidean distance"""
+        dx = pos2.x - pos1.x
+        dy = pos2.y - pos1.y
+        return int((dx*dx + dy*dy) ** 0.5)
+    
+    def mock_log(msg, force=False):
+        """No-op log (already wired in make_si_checker)"""
+        pass
+    
+    def mock_create_group(board, check_type, identifier, number):
+        """Mock PCB_GROUP creation"""
+        group = pcbnew.PCB_GROUP(board)
+        group.SetName(f"EMC_{check_type}_{identifier}_{number}")
+        return group
+    
+    # Wire up the utilities
+    checker.draw_marker = mock_draw_marker
+    checker.draw_arrow = mock_draw_arrow
+    checker.get_distance = mock_get_distance
+    checker.log = mock_log
+    checker.create_group = mock_create_group
+    
+    return checker, violations
+
+
+# ---------------------------------------------------------------------------
+# Decoupling Checker Factory
+# ---------------------------------------------------------------------------
+
+def make_decoupling_checker_with_utilities(board=None, config=None):
+    """
+    Factory: create a DecouplingChecker with utility functions wired up.
+    
+    Args:
+        board: MockBoard instance (default: empty board)
+        config: Configuration dict (default: {})
+        
+    Returns:
+        tuple: (checker, violations_list)
+            checker: DecouplingChecker instance with utilities wired
+            violations_list: List that accumulates violation info for inspection
+    """
+    import sys
+    from pathlib import Path
+    import importlib.util
+    
+    # Load DecouplingChecker from src/
+    _src = Path(__file__).parent.parent / "src" / "decoupling.py"
+    spec = importlib.util.spec_from_file_location("decoupling", _src)
+    _mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_mod)
+    DecouplingChecker = _mod.DecouplingChecker
+    
+    _board = board or MockBoard()
+    _config = config or {}
+    _report = []
+    
+    checker = DecouplingChecker(
+        board=_board,
+        marker_layer=44,
+        config=_config,
+        report_lines=_report,
+        verbose=False,
+        auditor=None
+    )
+    
+    violations = []
+    
+    # Wire up utility functions
+    def mock_draw_marker(board, pos, msg, layer, group):
+        """Track marker creation"""
+        violations.append({
+            'type': 'marker',
+            'position': (pos.x, pos.y),
+            'message': msg,
+            'layer': layer
+        })
+    
+    def mock_draw_arrow(board, start, end, label, layer, group):
+        """Track arrow creation"""
+        violations.append({
+            'type': 'arrow',
+            'start': (start.x, start.y),
+            'end': (end.x, end.y),
+            'label': label
+        })
+    
+    def mock_get_distance(pos1, pos2):
+        """Calculate Euclidean distance"""
+        dx = pos2.x - pos1.x
+        dy = pos2.y - pos1.y
+        return int((dx*dx + dy*dy) ** 0.5)
+    
+    def mock_log(msg, force=False):
+        """No-op log"""
+        pass
+    
+    def mock_create_group(board, check_type, identifier, number):
+        """Mock PCB_GROUP creation"""
+        import pcbnew
+        group = pcbnew.PCB_GROUP(board)
+        group.SetName(f"EMC_{check_type}_{identifier}_{number}" if number is not None else f"EMC_{check_type}_{identifier}")
+        return group
+    
+    # Wire utilities to checker instance so they're accessible
+    checker.draw_marker = mock_draw_marker
+    checker.draw_arrow = mock_draw_arrow
+    checker.get_distance = mock_get_distance
+    checker.log = mock_log
+    checker.create_group = mock_create_group
+    
+    return checker, violations
+
+
+# ---------------------------------------------------------------------------
+# Board Scenario Builders - Complex test board creation helpers
+# ---------------------------------------------------------------------------
+
+def make_parallel_traces(net1_name, net2_name, spacing_mm, length_mm, 
+                        layer=0, net_class="HighSpeed"):
+    """
+    Create two parallel horizontal traces for coupling tests.
+    
+    Args:
+        net1_name: First net name (e.g., "CLK")
+        net2_name: Second net name (e.g., "DATA")
+        spacing_mm: Vertical spacing between traces in mm
+        length_mm: Trace length in mm
+        layer: Layer ID (default 0 = F.Cu)
+        net_class: Net class name (default "HighSpeed")
+    
+    Returns:
+        tuple: (nets_list, tracks_list)
+    """
+    import pcbnew
+    
+    nets = [
+        MockNet(net1_name, net_class),
+        MockNet(net2_name, net_class)
+    ]
+    
+    # Trace 1: y=0
+    start1 = pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0))
+    end1 = pcbnew.VECTOR2I(pcbnew.FromMM(length_mm), pcbnew.FromMM(0))
+    track1 = MockTrack(net1_name, start1, end1, layer=layer, net_class=net_class)
+    
+    # Trace 2: y=spacing_mm
+    start2 = pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(spacing_mm))
+    end2 = pcbnew.VECTOR2I(pcbnew.FromMM(length_mm), pcbnew.FromMM(spacing_mm))
+    track2 = MockTrack(net2_name, start2, end2, layer=layer, net_class=net_class)
+    
+    return nets, [track1, track2]
+
+
+def make_differential_pair(base_name, spacing_mm, length_mm, 
+                          layer=0, net_class="USB"):
+    """
+    Create a differential pair (e.g., USB_DP/USB_DN).
+    
+    Args:
+        base_name: Base net name (e.g., "USB_D" creates USB_DP/USB_DN)
+        spacing_mm: Spacing between P and N traces
+        length_mm: Trace length in mm
+        layer: Layer ID
+        net_class: Net class name
+    
+    Returns:
+        tuple: (nets_list, tracks_list)
+    """
+    import pcbnew
+    
+    p_name = f"{base_name}P"
+    n_name = f"{base_name}N"
+    
+    nets = [
+        MockNet(p_name, net_class),
+        MockNet(n_name, net_class)
+    ]
+    
+    # P trace: y=0
+    start_p = pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0))
+    end_p = pcbnew.VECTOR2I(pcbnew.FromMM(length_mm), pcbnew.FromMM(0))
+    track_p = MockTrack(p_name, start_p, end_p, layer=layer, net_class=net_class)
+    
+    # N trace: y=spacing_mm
+    start_n = pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(spacing_mm))
+    end_n = pcbnew.VECTOR2I(pcbnew.FromMM(length_mm), pcbnew.FromMM(spacing_mm))
+    track_n = MockTrack(n_name, start_n, end_n, layer=layer, net_class=net_class)
+    
+    return nets, [track_p, track_n]
+
+
+def make_t_junction_stub(net_name, stub_length_mm, main_length_mm=10.0,
+                        layer=0, net_class="HighSpeed"):
+    """
+    Create a T-junction with a stub for stub detection tests.
+    
+    Args:
+        net_name: Net name (e.g., "CLK")
+        stub_length_mm: Length of stub branch
+        main_length_mm: Length of main trace
+        layer: Layer ID
+        net_class: Net class name
+    
+    Returns:
+        tuple: (nets_list, tracks_list)
+    """
+    import pcbnew
+    
+    nets = [MockNet(net_name, net_class)]
+    
+    # Main horizontal trace from (0, 0) to (main_length_mm, 0)
+    start_main = pcbnew.VECTOR2I(pcbnew.FromMM(0), pcbnew.FromMM(0))
+    end_main = pcbnew.VECTOR2I(pcbnew.FromMM(main_length_mm), pcbnew.FromMM(0))
+    track_main = MockTrack(net_name, start_main, end_main, layer=layer, net_class=net_class)
+    
+    # Stub branch from midpoint upward
+    stub_start = pcbnew.VECTOR2I(pcbnew.FromMM(main_length_mm / 2), pcbnew.FromMM(0))
+    stub_end = pcbnew.VECTOR2I(pcbnew.FromMM(main_length_mm / 2), pcbnew.FromMM(stub_length_mm))
+    track_stub = MockTrack(net_name, stub_start, stub_end, layer=layer, net_class=net_class)
+    
+    return nets, [track_main, track_stub]
+
+
+def make_ground_plane_with_gap(net_name, layer, gap_x_start_mm, gap_x_end_mm,
+                               board_width_mm=20.0, board_height_mm=10.0):
+    """
+    Create a ground plane with a gap for reference plane tests.
+    
+    Args:
+        net_name: Plane net name (e.g., "GND")
+        layer: Layer ID for plane
+        gap_x_start_mm: Gap start X position in mm
+        gap_x_end_mm: Gap end X position in mm
+        board_width_mm: Total board width
+        board_height_mm: Total board height
+    
+    Returns:
+        MockZone with gap in coverage
+    """
+    import pcbnew
+    
+    # Create two rectangles: before and after gap
+    rect_before = (
+        pcbnew.FromMM(0), 
+        pcbnew.FromMM(0),
+        pcbnew.FromMM(gap_x_start_mm),
+        pcbnew.FromMM(board_height_mm)
+    )
+    
+    rect_after = (
+        pcbnew.FromMM(gap_x_end_mm),
+        pcbnew.FromMM(0),
+        pcbnew.FromMM(board_width_mm),
+        pcbnew.FromMM(board_height_mm)
+    )
+    
+    net = MockNet(net_name, "Default")
+    zone = MockZone(
+        net_name=net_name,
+        layer=layer,
+        filled=True,
+        coverage_rects=[rect_before, rect_after]
+    )
+    
+    return net, zone
+
+
+def make_ic_with_power_pins(ref, position_mm, power_net="VCC", num_power_pins=1):
+    """
+    Create an IC footprint with power pins for decoupling tests.
+    
+    Args:
+        ref: IC reference designator (e.g., "U1")
+        position_mm: Tuple (x, y) in mm for IC position
+        power_net: Power net name (default "VCC")
+        num_power_pins: Number of power pins (default 1)
+    
+    Returns:
+        tuple: (net, footprint)
+    """
+    import pcbnew
+    
+    net = MockNet(power_net, "Default")
+    ic_pos = pcbnew.VECTOR2I(pcbnew.FromMM(position_mm[0]), pcbnew.FromMM(position_mm[1]))
+    
+    # Create power pads
+    pads = []
+    for i in range(num_power_pins):
+        pad_y_offset = i * 2.54  # 0.1" pitch
+        pad_pos = pcbnew.VECTOR2I(
+            ic_pos.x, 
+            ic_pos.y + pcbnew.FromMM(pad_y_offset)
+        )
+        pad = MockPad(power_net, pad_pos, number=str(i+1))
+        pads.append(pad)
+    
+    ic = MockFootprint(ref, pads, ic_pos)
+    return net, ic
+
+
+def make_capacitor(ref, position_mm, power_net="VCC"):
+    """
+    Create a capacitor footprint for decoupling tests.
+    
+    Args:
+        ref: Capacitor reference designator (e.g., "C1")
+        position_mm: Tuple (x, y) in mm for capacitor position
+        power_net: Power net name (default "VCC")
+    
+    Returns:
+        MockFootprint with 2 pads (one on power net, one on GND)
+    """
+    import pcbnew
+    
+    cap_pos = pcbnew.VECTOR2I(pcbnew.FromMM(position_mm[0]), pcbnew.FromMM(position_mm[1]))
+    
+    # Capacitor has 2 pads: one on power net, one on GND
+    pad1 = MockPad(power_net, cap_pos, number="1")
+    pad2_pos = pcbnew.VECTOR2I(cap_pos.x + pcbnew.FromMM(2.0), cap_pos.y)
+    pad2 = MockPad("GND", pad2_pos, number="2")
+    
+    cap = MockFootprint(ref, [pad1, pad2], cap_pos)
+    return cap
+
+
+# ---------------------------------------------------------------------------
+# EMI Filtering Board Builders
+# ---------------------------------------------------------------------------
+
+def make_connector_with_signals(ref, position_mm, signal_nets):
+    """
+    Create a connector footprint for EMI filtering tests.
+    
+    Args:
+        ref: Connector reference designator (e.g., "J1")
+        position_mm: Tuple (x, y) in mm for connector position
+        signal_nets: List of signal net names (e.g., ["USB_DP", "USB_DN"])
+    
+    Returns:
+        tuple: (nets_list, connector_footprint)
+    """
+    import pcbnew
+    
+    conn_pos = pcbnew.VECTOR2I(pcbnew.FromMM(position_mm[0]), pcbnew.FromMM(position_mm[1]))
+    pads = []
+    nets = []
+    
+    for i, net_name in enumerate(signal_nets):
+        net = MockNet(net_name, "Default")
+        nets.append(net)
+        pad_pos = pcbnew.VECTOR2I(
+            conn_pos.x + pcbnew.FromMM(i * 2.54),  # 0.1" pitch
+            conn_pos.y
+        )
+        # Pass the net object directly to MockPad so they share the same net code
+        pad = MockPad(net, pad_pos, number=str(i+1))
+        pads.append(pad)
+    
+    connector = MockFootprint(ref, pads, conn_pos)
+    return nets, connector
+
+
+def make_emi_filter(ref, position_mm, signal_net, filter_type="FB"):
+    """
+    Create an EMI filter component (ferrite bead, inductor, or capacitor).
+    
+    Args:
+        ref: Reference designator (e.g., "FB1", "L1", "C1")
+        position_mm: Tuple (x, y) in mm for filter position
+        signal_net: MockNet object (from make_connector_with_signals)
+        filter_type: Type of filter ("FB", "L", "C")
+    
+    Returns:
+        MockFootprint with 2 pads on signal net
+    """
+    import pcbnew
+    
+    filter_pos = pcbnew.VECTOR2I(pcbnew.FromMM(position_mm[0]), pcbnew.FromMM(position_mm[1]))
+    
+    # Filter has 2 pads on signal net - pass net object directly to MockPad
+    pad1 = MockPad(signal_net, filter_pos, number="1")
+    pad2_pos = pcbnew.VECTOR2I(filter_pos.x + pcbnew.FromMM(2.0), filter_pos.y)
+    pad2 = MockPad(signal_net, pad2_pos, number="2")
+    
+    filter_fp = MockFootprint(ref, [pad1, pad2], filter_pos)
+    return filter_fp
+
+
+# ---------------------------------------------------------------------------
+# EMI Filtering Checker Factory
+# ---------------------------------------------------------------------------
+
+def make_emi_filtering_checker_with_utilities(board=None, config=None):
+    """
+    Factory: create an EMIFilteringChecker with utility functions wired up.
+    
+    Args:
+        board: MockBoard instance (default: empty board)
+        config: Configuration dict (default: {})
+        
+    Returns:
+        tuple: (checker, violations_list)
+            checker: EMIFilteringChecker instance with utilities wired
+            violations_list: List that accumulates violation info for inspection
+    """
+    import sys
+    from pathlib import Path
+    import importlib.util
+    
+    # Load EMIFilteringChecker from src/
+    _src = Path(__file__).parent.parent / "src" / "emi_filtering.py"
+    spec = importlib.util.spec_from_file_location("emi_filtering", _src)
+    _mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_mod)
+    EMIFilteringChecker = _mod.EMIFilteringChecker
+    
+    _board = board or MockBoard()
+    _config = config or {}
+    _report = []
+    
+    checker = EMIFilteringChecker(
+        board=_board,
+        marker_layer=44,
+        config=_config,
+        report_lines=_report,
+        verbose=False,
+        auditor=None
+    )
+    
+    violations = []
+    
+    # Wire up utility functions
+    def mock_draw_marker(board, pos, msg, layer, group):
+        """Track marker creation"""
+        violations.append({
+            'type': 'marker',
+            'position': (pos.x, pos.y),
+            'message': msg,
+            'layer': layer
+        })
+    
+    def mock_draw_arrow(board, start, end, label, layer, group):
+        """Track arrow creation"""
+        violations.append({
+            'type': 'arrow',
+            'start': (start.x, start.y),
+            'end': (end.x, end.y),
+            'label': label
+        })
+    
+    def mock_get_distance(pos1, pos2):
+        """Calculate Euclidean distance"""
+        dx = pos2.x - pos1.x
+        dy = pos2.y - pos1.y
+        return int((dx*dx + dy*dy) ** 0.5)
+    
+    def mock_log(msg, force=False):
+        """No-op log"""
+        pass
+    
+    def mock_create_group(board, check_type, identifier, number):
+        """Mock PCB_GROUP creation"""
+        import pcbnew
+        group = pcbnew.PCB_GROUP(board)
+        group.SetName(f"EMC_{check_type}_{identifier}_{number}" if number is not None else f"EMC_{check_type}_{identifier}")
+        return group
+    
+    # Wire utilities to checker instance
+    checker.draw_marker = mock_draw_marker
+    checker.draw_arrow = mock_draw_arrow
+    checker.get_distance = mock_get_distance
+    checker.log = mock_log
+    checker.create_group = mock_create_group
+    
+    return checker, violations
